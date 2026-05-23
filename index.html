@@ -874,39 +874,88 @@ async function loadSession() {
 }
 
 // ============================================================
-// SCRAPE X REPLIES via CORS proxy
+// SCRAPE X REPLIES via CORS proxy — tries multiple proxies
 // ============================================================
+
+// Multiple free CORS proxies — tried in order until one works
+const PROXY_LIST = [
+  url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
+  url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+  url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
+];
+
+async function fetchViaProxy(targetUrl) {
+  for (const makeProxy of PROXY_LIST) {
+    try {
+      const proxied = makeProxy(targetUrl);
+      const resp = await fetch(proxied, { signal: AbortSignal.timeout(20000) });
+      if (!resp.ok) continue;
+      // allorigins wraps in {contents:...}, codetabs returns raw text
+      const text = await resp.text();
+      let html = text;
+      try {
+        const json = JSON.parse(text);
+        if (json.contents) html = json.contents;
+      } catch {}
+      if (html && html.length > 500) return html;
+    } catch { continue; }
+  }
+  return '';
+}
+
+function extractIdsFromHtml(html) {
+  const ids = new Set();
+  if (!html) return ids;
+
+  // Method 1: in_reply_to_status_id_str in embedded JSON — most reliable
+  const m1 = [...html.matchAll(/"in_reply_to_status_id_str"\s*:\s*"(\d{10,20})"/g)];
+  m1.forEach(m => ids.add(m[1]));
+
+  // Method 2: in_reply_to_status_id (numeric, no quotes) — older format
+  const m2 = [...html.matchAll(/"in_reply_to_status_id"\s*:\s*(\d{10,20})/g)];
+  m2.forEach(m => ids.add(m[1]));
+
+  // Method 3: conversation_id patterns near reply markers
+  const m3 = [...html.matchAll(/"conversation_id_str"\s*:\s*"(\d{10,20})"/g)];
+  m3.forEach(m => ids.add(m[1]));
+
+  // Method 4: all /status/ID occurrences (broad net — catches parent tweet links)
+  const m4 = [...html.matchAll(/\/status\/(\d{10,20})/g)];
+  m4.forEach(m => ids.add(m[1]));
+
+  // Method 5: tweet_results permalink patterns
+  const m5 = [...html.matchAll(/"permalink"\s*:\s*"[^"]*\/status\/(\d{10,20})"/g)];
+  m5.forEach(m => ids.add(m[1]));
+
+  return ids;
+}
+
 async function scrapeReplies(username) {
-  const url = `https://x.com/${username}/with_replies`;
-  const proxied = CORS_PROXY + encodeURIComponent(url);
-
-  const resp = await fetch(proxied, { signal: AbortSignal.timeout(25000) });
-  const json = await resp.json();
-  const html = json.contents || '';
-
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(html, 'text/html');
-
   const repliedIds = new Set();
 
-  // Method 1: look for tweet URL patterns in raw HTML
-  const tweetPattern = /\/status\/(\d{10,20})/g;
-  const allMatches = [...html.matchAll(tweetPattern)];
+  // Try fetching /with_replies page
+  const withRepliesUrl = `https://x.com/${username}/with_replies`;
+  const html1 = await fetchViaProxy(withRepliesUrl);
+  extractIdsFromHtml(html1).forEach(id => repliedIds.add(id));
 
-  // We need pairs: when X renders a reply, both the reply
-  // and the parent tweet URL appear close together.
-  // The parent tweet URL appears BEFORE the user's reply in the markup.
-  // Strategy: find all status IDs, then look for the known session tweet IDs.
-  for (const m of allMatches) {
-    repliedIds.add(m[1]);
-  }
+  // Also try the plain profile page — sometimes has more data
+  const profileUrl = `https://x.com/${username}`;
+  const html2 = await fetchViaProxy(profileUrl);
+  extractIdsFromHtml(html2).forEach(id => repliedIds.add(id));
 
-  // Method 2: look for in_reply_to patterns in embedded JSON
-  const replyToPattern = /"in_reply_to_status_id_str"\s*:\s*"(\d+)"/g;
-  const replyMatches = [...html.matchAll(replyToPattern)];
-  for (const m of replyMatches) {
-    repliedIds.add(m[1]);
-  }
+  // Also try nitter.net as a fallback (often has cleaner reply data)
+  try {
+    const nitterUrl = `https://nitter.net/${username}/with_replies`;
+    const html3 = await fetchViaProxy(nitterUrl);
+    if (html3) {
+      // Nitter uses tweet-link class with /status/ hrefs
+      const m = [...html3.matchAll(/href="[^"]*\/status\/(\d{10,20})"/g)];
+      m.forEach(mm => repliedIds.add(mm[1]));
+      // Also grab tweet-content reply-to links
+      const m2 = [...html3.matchAll(/\/status\/(\d{10,20})/g)];
+      m2.forEach(mm => repliedIds.add(mm[1]));
+    }
+  } catch {}
 
   return repliedIds;
 }
@@ -1053,13 +1102,36 @@ function renderResult(r) {
 // FETCH PROFILE PICTURE
 // ============================================================
 async function fetchProfilePic(username) {
-  // Try unavatar service (free, no API key)
+  // For the <img> tag in the UI — unavatar works fine for display
+  return `https://unavatar.io/twitter/${username}`;
+}
+
+// Fetch profile pic as a data URL safe for canvas drawing
+// Canvas blocks cross-origin images — we proxy through allorigins
+async function fetchProfilePicForCanvas(username) {
   const sources = [
     `https://unavatar.io/twitter/${username}`,
     `https://unavatar.io/x/${username}`,
+    `https://api.dicebear.com/7.x/initials/svg?seed=${username}`,
   ];
-  // Return first source — browser will fall back via img.onerror
-  return sources[0];
+
+  for (const src of sources) {
+    try {
+      // Proxy through allorigins to avoid CORS canvas taint
+      const proxied = `https://api.allorigins.win/raw?url=${encodeURIComponent(src)}`;
+      const resp = await fetch(proxied, { signal: AbortSignal.timeout(8000) });
+      if (!resp.ok) continue;
+      const blob = await resp.blob();
+      // Convert to object URL / data URL for canvas
+      return await new Promise((res, rej) => {
+        const reader = new FileReader();
+        reader.onload = () => res(reader.result);
+        reader.onerror = rej;
+        reader.readAsDataURL(blob);
+      });
+    } catch { continue; }
+  }
+  return null; // will fall back to initials drawn on canvas
 }
 
 // ============================================================
@@ -1120,17 +1192,32 @@ async function downloadCard(format) {
 
   // ── Profile Picture (circle, left side)
   const pfpSize = 80, pfpX = 52, pfpY = 80;
+  // Draw profile pic — fetch as data URL to avoid canvas CORS taint
   try {
-    const pfpImg = await loadImage(r.profilePic ||
-      `https://ui-avatars.com/api/?name=${r.username}&background=16161f&color=63b3ed&size=128&bold=true`);
+    const pfpDataUrl = await fetchProfilePicForCanvas(r.username);
+    if (pfpDataUrl) {
+      const pfpImg = await loadImage(pfpDataUrl);
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(pfpX, pfpY, pfpSize/2, 0, Math.PI*2);
+      ctx.closePath();
+      ctx.clip();
+      ctx.drawImage(pfpImg, pfpX - pfpSize/2, pfpY - pfpSize/2, pfpSize, pfpSize);
+      ctx.restore();
+    } else { throw new Error('no pfp'); }
+  } catch {
+    // Fallback: draw initials circle
     ctx.save();
     ctx.beginPath();
     ctx.arc(pfpX, pfpY, pfpSize/2, 0, Math.PI*2);
-    ctx.closePath();
-    ctx.clip();
-    ctx.drawImage(pfpImg, pfpX - pfpSize/2, pfpY - pfpSize/2, pfpSize, pfpSize);
+    ctx.fillStyle = '#16161f'; ctx.fill();
+    ctx.fillStyle = '#63b3ed';
+    ctx.font = `bold 28px Arial`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(r.username.slice(0,2).toUpperCase(), pfpX, pfpY);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
     ctx.restore();
-  } catch {}
+  }
 
   // Profile pic ring
   ctx.strokeStyle = accent + '60'; ctx.lineWidth = 2;

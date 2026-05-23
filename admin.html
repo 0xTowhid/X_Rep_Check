@@ -701,18 +701,48 @@ async function adminCheck() {
   btn.innerHTML = '<div class="spinner"></div>';
   document.getElementById('admin-result-wrap').style.display = 'none';
 
-  // Scrape
+  // Scrape — try multiple proxies
+  const PROXIES = [
+    u => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`,
+    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
+  ];
+
+  async function adminFetchProxy(targetUrl) {
+    for (const mkProxy of PROXIES) {
+      try {
+        const r = await fetch(mkProxy(targetUrl), { signal: AbortSignal.timeout(18000) });
+        if (!r.ok) continue;
+        const t = await r.text();
+        let h = t;
+        try { const j = JSON.parse(t); if (j.contents) h = j.contents; } catch {}
+        if (h && h.length > 500) return h;
+      } catch { continue; }
+    }
+    return '';
+  }
+
+  function extractIds(html) {
+    const ids = new Set();
+    [
+      /"in_reply_to_status_id_str"\s*:\s*"(\d{10,20})"/g,
+      /"in_reply_to_status_id"\s*:\s*(\d{10,20})/g,
+      /\/status\/(\d{10,20})/g,
+      /"conversation_id_str"\s*:\s*"(\d{10,20})"/g,
+    ].forEach(re => [...html.matchAll(re)].forEach(m => ids.add(m[1])));
+    return ids;
+  }
+
   let repliedIds = new Set();
   try {
-    const url = `https://x.com/${username}/with_replies`;
-    const resp = await fetch(CORS_PROXY + encodeURIComponent(url), { signal: AbortSignal.timeout(25000) });
-    const json = await resp.json();
-    const html = json.contents || '';
-
-    const m1 = [...html.matchAll(/\/status\/(\d{10,20})/g)];
-    m1.forEach(m => repliedIds.add(m[1]));
-    const m2 = [...html.matchAll(/"in_reply_to_status_id_str"\s*:\s*"(\d+)"/g)];
-    m2.forEach(m => repliedIds.add(m[1]));
+    const h1 = await adminFetchProxy(`https://x.com/${username}/with_replies`);
+    extractIds(h1).forEach(id => repliedIds.add(id));
+    const h2 = await adminFetchProxy(`https://x.com/${username}`);
+    extractIds(h2).forEach(id => repliedIds.add(id));
+    try {
+      const h3 = await adminFetchProxy(`https://nitter.net/${username}/with_replies`);
+      if (h3) [...h3.matchAll(/\/status\/(\d{10,20})/g)].forEach(m => repliedIds.add(m[1]));
+    } catch {}
   } catch {}
 
   const tweetResults = tweets.map(t => ({
