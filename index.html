@@ -721,14 +721,34 @@
     </div>
     <div class="msg msg-error" id="check-error"></div>
     <div class="steps" id="steps-wrap" style="display:none;">
-      <div class="step-item" id="step-1"><span class="step-icon">🔍</span> Connecting to reply sources...</div>
-      <div class="step-item" id="step-2"><span class="step-icon">📜</span> Scanning your public replies...</div>
-      <div class="step-item" id="step-3"><span class="step-icon">🔗</span> Extracting parent tweet IDs...</div>
+      <div class="step-item" id="step-1"><span class="step-icon">🔍</span> Detecting scan method...</div>
+      <div class="step-item" id="step-2"><span class="step-icon">📜</span> Fetching your replies...</div>
+      <div class="step-item" id="step-3"><span class="step-icon">🔗</span> Extracting tweet IDs...</div>
       <div class="step-item" id="step-4"><span class="step-icon">✅</span> Comparing with session tasks...</div>
       <div class="step-item" id="step-5"><span class="step-icon">🎯</span> Building your report...</div>
     </div>
     <p style="font-family:var(--font-mono);font-size:10px;color:var(--text-dim);margin-top:12px;">
       ✓ No screenshots &nbsp;·&nbsp; ✓ Replies only &nbsp;·&nbsp; ✓ Auto-detected
+    </p>
+  </div>
+
+  <!-- EXTENSION BANNER — shown when extension/railway not configured -->
+  <div class="card delay-3" id="ext-banner" style="border-color:rgba(99,179,237,0.15);display:none;">
+    <div class="card-label">⚡ FASTER + MORE ACCURATE</div>
+    <p style="font-size:13px;font-weight:700;margin-bottom:6px;">Install the browser extension</p>
+    <p style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted);margin-bottom:14px;line-height:1.7;">
+      The extension uses your logged-in X session to scan replies accurately. Without it, results may be incomplete due to X's restrictions.
+    </p>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;">
+      <a id="ext-download-btn" href="#" class="btn btn-primary" style="text-decoration:none;font-size:11px;" download>
+        ⬇ Download Extension
+      </a>
+      <a href="#" class="btn btn-ghost" style="text-decoration:none;font-size:11px;" onclick="document.getElementById('ext-banner').style.display='none';return false;">
+        Dismiss
+      </a>
+    </div>
+    <p style="font-family:var(--font-mono);font-size:10px;color:var(--text-dim);margin-top:10px;">
+      After download: Chrome → Extensions → Load unpacked → select the folder
     </p>
   </div>
 
@@ -830,6 +850,10 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('username-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') checkResult();
   });
+  // Show extension banner if neither extension nor Railway is set up
+  if (!EXTENSION_ID && !RAILWAY_URL) {
+    document.getElementById('ext-banner').style.display = 'block';
+  }
 });
 
 // ============================================================
@@ -874,35 +898,74 @@ async function loadSession() {
 }
 
 // ============================================================
-// SCRAPE X REPLIES — multi-source, CORS-proxy approach
+// CONFIG — Set your Railway backend URL after deploying
+// ============================================================
+// Replace with your Railway URL e.g. 'https://session-proof-scraper.up.railway.app'
+// Leave empty string '' to skip Railway and rely on extension only
+const RAILWAY_URL = '';
+
+// Your Chrome Extension ID after publishing/installing
+// Found in chrome://extensions after loading unpacked
+// e.g. 'abcdefghijklmnopqrstuvwxyz123456'
+const EXTENSION_ID = 'encilfbemkfgiflhgokkkogihemgjpej';
+
+// ============================================================
+// SCRAPE ENGINE — 3-tier: Extension → Railway → CORS proxies
 // ============================================================
 
-// X.com itself returns a JS-only shell via CORS proxies (no tweet data).
-// We instead query active Nitter instances (open-source Twitter frontends)
-// which render full HTML including replies, plus supplemental sources.
+// Check if extension is installed and responding
+async function isExtensionAvailable() {
+  if (!EXTENSION_ID || !window.chrome || !chrome.runtime) return false;
+  return new Promise(resolve => {
+    try {
+      chrome.runtime.sendMessage(EXTENSION_ID, { type: 'PING' }, resp => {
+        resolve(!chrome.runtime.lastError && resp && resp.ok);
+      });
+      setTimeout(() => resolve(false), 1500);
+    } catch { resolve(false); }
+  });
+}
 
-// Active public Nitter instances (updated list — try in order)
-const NITTER_INSTANCES = [
-  'https://nitter.privacydev.net',
-  'https://nitter.poast.org',
-  'https://nitter.lucahammer.com',
-  'https://nitter.1d4.us',
-  'https://nitter.kavin.rocks',
-  'https://lightbrd.com',
-];
+// Tier 1: Chrome Extension (uses user's real logged-in X session)
+async function scrapeViaExtension(username) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(
+      EXTENSION_ID,
+      { type: 'SCRAPE_REPLIES', username },
+      response => {
+        if (chrome.runtime.lastError || !response) return reject(new Error('Extension error'));
+        if (response.error) return reject(new Error(response.error));
+        resolve(new Set(response.ids || []));
+      }
+    );
+    // Timeout after 35s (tab open + scroll takes time)
+    setTimeout(() => reject(new Error('Extension timeout')), 35000);
+  });
+}
 
-// CORS proxy wrappers
-const CORS_PROXIES = [
+// Tier 2: Railway Puppeteer backend
+async function scrapeViaRailway(username) {
+  if (!RAILWAY_URL) throw new Error('No Railway URL configured');
+  const resp = await fetch(`${RAILWAY_URL}/scrape?username=${encodeURIComponent(username)}`, {
+    signal: AbortSignal.timeout(40000)
+  });
+  if (!resp.ok) throw new Error(`Railway error ${resp.status}`);
+  const data = await resp.json();
+  if (data.error) throw new Error(data.error);
+  return new Set(data.ids || []);
+}
+
+// Tier 3: CORS proxy fallback (best-effort, often returns empty due to X blocking)
+const PROXY_LIST = [
   url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
   url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
   url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
 ];
 
-async function fetchViaProxy(targetUrl, timeoutMs = 15000) {
-  for (const makeProxy of CORS_PROXIES) {
+async function fetchViaProxy(targetUrl) {
+  for (const makeProxy of PROXY_LIST) {
     try {
-      const proxied = makeProxy(targetUrl);
-      const resp = await fetch(proxied, { signal: AbortSignal.timeout(timeoutMs) });
+      const resp = await fetch(makeProxy(targetUrl), { signal: AbortSignal.timeout(15000) });
       if (!resp.ok) continue;
       const text = await resp.text();
       let html = text;
@@ -913,71 +976,54 @@ async function fetchViaProxy(targetUrl, timeoutMs = 15000) {
   return '';
 }
 
-// Extract all tweet/status IDs that appear in HTML
 function extractIdsFromHtml(html) {
   const ids = new Set();
   if (!html) return ids;
-
-  // All /status/ID patterns (catches reply-to links, tweet links, etc.)
-  const all = [...html.matchAll(/\/status\/(\d{10,20})/g)];
-  all.forEach(m => ids.add(m[1]));
-
-  // in_reply_to_status_id_str in embedded JSON
-  const j1 = [...html.matchAll(/"in_reply_to_status_id_str"\s*:\s*"(\d{10,20})"/g)];
-  j1.forEach(m => ids.add(m[1]));
-
-  // in_reply_to_status_id numeric
-  const j2 = [...html.matchAll(/"in_reply_to_status_id"\s*:\s*(\d{10,20})/g)];
-  j2.forEach(m => ids.add(m[1]));
-
+  [
+    /"in_reply_to_status_id_str"\s*:\s*"(\d{10,20})"/g,
+    /"in_reply_to_status_id"\s*:\s*(\d{10,20})/g,
+    /\/status\/(\d{10,20})/g,
+    /"conversation_id_str"\s*:\s*"(\d{10,20})"/g,
+  ].forEach(re => [...html.matchAll(re)].forEach(m => ids.add(m[1])));
   return ids;
 }
 
-// Try fetching a Nitter instance's /with_replies page for the user
-async function fetchNitterReplies(username) {
+async function scrapeViaProxy(username) {
   const ids = new Set();
-  // Try each instance; return as soon as we get useful data
-  for (const instance of NITTER_INSTANCES) {
-    try {
-      const url = `${instance}/${username}/with_replies`;
-      const html = await fetchViaProxy(url, 18000);
-      if (!html || html.length < 800) continue;
-
-      // Check this is actually a Nitter page (not a 404/error page)
-      if (!html.includes('timeline-item') && !html.includes('tweet-link') &&
-          !html.includes('/status/')) continue;
-
-      extractIdsFromHtml(html).forEach(id => ids.add(id));
-
-      // Also grab the plain profile page from same instance for more coverage
-      try {
-        const html2 = await fetchViaProxy(`${instance}/${username}`, 12000);
-        extractIdsFromHtml(html2).forEach(id => ids.add(id));
-      } catch {}
-
-      if (ids.size > 0) return ids; // got real data — stop trying
-    } catch { continue; }
-  }
+  const html1 = await fetchViaProxy(`https://x.com/${username}/with_replies`);
+  extractIdsFromHtml(html1).forEach(id => ids.add(id));
+  const html2 = await fetchViaProxy(`https://x.com/${username}`);
+  extractIdsFromHtml(html2).forEach(id => ids.add(id));
   return ids;
 }
 
-async function scrapeReplies(username) {
-  const repliedIds = new Set();
-
-  // Primary: Nitter instances (most reliable for public reply data)
-  const nitterIds = await fetchNitterReplies(username);
-  nitterIds.forEach(id => repliedIds.add(id));
-
-  // Secondary: try x.com / twitter.com via proxy (usually returns shell, but worth trying)
-  if (repliedIds.size === 0) {
-    const html1 = await fetchViaProxy(`https://x.com/${username}/with_replies`, 20000);
-    extractIdsFromHtml(html1).forEach(id => repliedIds.add(id));
-
-    const html2 = await fetchViaProxy(`https://twitter.com/${username}/with_replies`, 20000);
-    extractIdsFromHtml(html2).forEach(id => repliedIds.add(id));
+// Main orchestrator — tries each tier in order
+async function scrapeReplies(username, onStatus) {
+  // Tier 1: Extension
+  if (EXTENSION_ID) {
+    try {
+      const extAvailable = await isExtensionAvailable();
+      if (extAvailable) {
+        onStatus && onStatus('extension');
+        const ids = await scrapeViaExtension(username);
+        if (ids.size > 0) return { ids, source: 'extension' };
+      }
+    } catch {}
   }
 
-  return repliedIds;
+  // Tier 2: Railway
+  if (RAILWAY_URL) {
+    try {
+      onStatus && onStatus('railway');
+      const ids = await scrapeViaRailway(username);
+      if (ids.size > 0) return { ids, source: 'railway' };
+    } catch {}
+  }
+
+  // Tier 3: CORS proxy (best effort)
+  onStatus && onStatus('proxy');
+  const ids = await scrapeViaProxy(username);
+  return { ids, source: 'proxy' };
 }
 
 // ============================================================
@@ -1003,16 +1049,28 @@ async function checkResult() {
   resetSteps();
 
   try {
-    await showStep(1, 600);
-    await showStep(2, 1200);
+    await showStep(1, 400);
 
-    let repliedIds;
+    let repliedIds = new Set();
+    let scrapeSource = 'proxy';
     try {
-      repliedIds = await scrapeReplies(username);
+      const result = await scrapeReplies(username, (src) => {
+        scrapeSource = src;
+        const labels = {
+          extension: '🔌 Using browser extension...',
+          railway: '🚂 Using Railway backend...',
+          proxy: '🌐 Using public proxy (best effort)...'
+        };
+        const el = document.getElementById('step-2');
+        if (el) el.querySelector('.step-icon').textContent = src === 'extension' ? '🔌' : src === 'railway' ? '🚂' : '🌐';
+      });
+      repliedIds = result.ids;
+      scrapeSource = result.source;
     } catch (e) {
-      repliedIds = new Set(); // proceed with empty set, will show all as missing
+      repliedIds = new Set();
     }
 
+    await showStep(2, 300);
     await showStep(3, 400);
     await showStep(4, 600);
 
@@ -1127,42 +1185,25 @@ async function fetchProfilePic(username) {
 }
 
 // Fetch profile pic as a data URL safe for canvas drawing
-// Strategy: use ui-avatars (always works) as primary, try to proxy unavatar as bonus
 async function fetchProfilePicForCanvas(username) {
-  // Try unavatar proxied through allorigins/raw (returns raw bytes, not JSON wrapper)
-  const unavatarSources = [
-    `https://unavatar.io/twitter/${username}`,
-    `https://unavatar.io/x/${username}`,
-  ];
-
-  for (const src of unavatarSources) {
-    for (const makeProxy of CORS_PROXIES) {
-      try {
-        // Use /raw endpoint on allorigins (returns raw file, not JSON)
-        let proxied = makeProxy(src);
-        // For allorigins specifically, use /raw instead of /get to avoid JSON wrapping
-        if (proxied.includes('allorigins.win/get')) {
-          proxied = `https://api.allorigins.win/raw?url=${encodeURIComponent(src)}`;
-        }
-        const resp = await fetch(proxied, { signal: AbortSignal.timeout(8000) });
-        if (!resp.ok) continue;
-        const blob = await resp.blob();
-        if (!blob || blob.size < 500) continue; // skip empty/broken responses
-        const dataUrl = await new Promise((res, rej) => {
-          const reader = new FileReader();
-          reader.onload = () => res(reader.result);
-          reader.onerror = rej;
-          reader.readAsDataURL(blob);
-        });
-        // Validate it's actually an image (not an HTML error page)
-        if (dataUrl && (dataUrl.startsWith('data:image/') || dataUrl.startsWith('data:application/octet'))) {
-          return dataUrl;
-        }
-      } catch { continue; }
-    }
+  // Try unavatar via allorigins raw proxy
+  for (const src of [`https://unavatar.io/twitter/${username}`, `https://unavatar.io/x/${username}`]) {
+    try {
+      const proxied = `https://api.allorigins.win/raw?url=${encodeURIComponent(src)}`;
+      const resp = await fetch(proxied, { signal: AbortSignal.timeout(8000) });
+      if (!resp.ok) continue;
+      const blob = await resp.blob();
+      if (!blob || blob.size < 500) continue;
+      const dataUrl = await new Promise((res, rej) => {
+        const reader = new FileReader();
+        reader.onload = () => res(reader.result);
+        reader.onerror = rej;
+        reader.readAsDataURL(blob);
+      });
+      if (dataUrl && dataUrl.startsWith('data:image/')) return dataUrl;
+    } catch { continue; }
   }
-
-  // Reliable fallback: ui-avatars.com has permissive CORS and no redirects
+  // Reliable fallback: ui-avatars has open CORS
   try {
     const uiUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(username)}&background=16161f&color=63b3ed&size=128&bold=true&format=png`;
     const resp = await fetch(uiUrl, { signal: AbortSignal.timeout(8000) });
@@ -1176,8 +1217,7 @@ async function fetchProfilePicForCanvas(username) {
       });
     }
   } catch {}
-
-  return null; // final fallback: initials drawn directly on canvas
+  return null;
 }
 
 // ============================================================
