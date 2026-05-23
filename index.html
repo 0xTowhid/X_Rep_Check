@@ -1,0 +1,1326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Session Proof — Verify Your Replies</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root {
+    --bg: #06060a;
+    --surface: #0f0f17;
+    --surface2: #16161f;
+    --surface3: #1d1d28;
+    --border: rgba(255,255,255,0.07);
+    --border-active: rgba(99,179,237,0.5);
+    --cyan: #63b3ed;
+    --cyan-bright: #90cdf4;
+    --green: #68d391;
+    --red: #fc8181;
+    --orange: #f6ad55;
+    --gold: #ecc94b;
+    --text: #e2e8f0;
+    --text-muted: rgba(226,232,240,0.4);
+    --text-dim: rgba(226,232,240,0.2);
+    --glow-cyan: rgba(99,179,237,0.15);
+    --radius: 14px;
+    --font-display: 'Syne', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+
+  body {
+    font-family: var(--font-display);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Noise overlay */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.035'/%3E%3C/svg%3E");
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /* Grid bg */
+  .grid-bg {
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(99,179,237,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(99,179,237,0.03) 1px, transparent 1px);
+    background-size: 48px 48px;
+    pointer-events: none;
+  }
+
+  /* Glows */
+  .glow-1 {
+    position: fixed;
+    top: -200px; left: -100px;
+    width: 600px; height: 600px;
+    background: radial-gradient(circle, rgba(99,179,237,0.06) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .glow-2 {
+    position: fixed;
+    bottom: -150px; right: -100px;
+    width: 500px; height: 500px;
+    background: radial-gradient(circle, rgba(159,122,234,0.05) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  /* ── LAYOUT ── */
+  .wrapper {
+    position: relative;
+    z-index: 1;
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 0 20px 80px;
+  }
+
+  /* ── NAV ── */
+  nav {
+    position: relative;
+    z-index: 10;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .nav-brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text-muted);
+    letter-spacing: 0.05em;
+  }
+
+  .nav-brand .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--cyan);
+    box-shadow: 0 0 8px var(--cyan);
+    animation: pulse-dot 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse-dot {
+    0%,100% { opacity:1; transform:scale(1); }
+    50% { opacity:0.5; transform:scale(0.7); }
+  }
+
+  .nav-link {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    text-decoration: none;
+    letter-spacing: 0.1em;
+    transition: color 0.2s;
+  }
+  .nav-link:hover { color: var(--cyan); }
+
+  /* ── HERO ── */
+  .hero {
+    text-align: center;
+    padding: 60px 0 40px;
+    animation: fadeUp 0.6s ease both;
+  }
+
+  .hero-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 14px;
+    border-radius: 999px;
+    border: 1px solid rgba(99,179,237,0.2);
+    background: rgba(99,179,237,0.05);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--cyan);
+    letter-spacing: 0.15em;
+    margin-bottom: 24px;
+  }
+
+  .hero h1 {
+    font-size: clamp(32px, 6vw, 52px);
+    font-weight: 800;
+    line-height: 1.1;
+    letter-spacing: -0.02em;
+    margin-bottom: 16px;
+  }
+
+  .hero h1 span {
+    background: linear-gradient(135deg, var(--cyan-bright) 0%, #a78bfa 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .hero p {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text-muted);
+    max-width: 420px;
+    margin: 0 auto;
+    line-height: 1.7;
+  }
+
+  /* ── CARD ── */
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px;
+    margin-bottom: 16px;
+    transition: border-color 0.3s;
+    animation: fadeUp 0.6s ease both;
+  }
+  .card:hover { border-color: rgba(99,179,237,0.12); }
+
+  .card-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  /* ── SESSION CARD ── */
+  .session-title {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 6px;
+  }
+
+  .session-desc {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 16px;
+    line-height: 1.6;
+  }
+
+  .session-stats {
+    display: flex;
+    gap: 20px;
+  }
+
+  .stat-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .stat-val {
+    font-size: 24px;
+    font-weight: 800;
+    color: var(--cyan);
+    line-height: 1;
+  }
+
+  .stat-lbl {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.1em;
+  }
+
+  /* ── INPUT ── */
+  .input-group {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+
+  .input-wrap {
+    flex: 1;
+    position: relative;
+  }
+
+  .at-sign {
+    position: absolute;
+    left: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-family: var(--font-mono);
+    font-size: 14px;
+    color: var(--text-muted);
+    pointer-events: none;
+  }
+
+  input[type="text"], input[type="email"], input[type="password"], textarea {
+    width: 100%;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px 12px 30px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    color: var(--text);
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+  }
+
+  input[type="text"]:focus, input[type="email"]:focus,
+  input[type="password"]:focus, textarea:focus {
+    border-color: var(--border-active);
+    box-shadow: 0 0 0 3px rgba(99,179,237,0.08), 0 0 20px rgba(99,179,237,0.08);
+  }
+
+  input.no-at { padding-left: 14px; }
+
+  textarea {
+    padding-left: 14px;
+    resize: vertical;
+    min-height: 120px;
+    line-height: 1.6;
+  }
+
+  /* ── BUTTONS ── */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 22px;
+    border-radius: 10px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    cursor: pointer;
+    border: none;
+    transition: all 0.2s;
+    white-space: nowrap;
+  }
+
+  .btn-primary {
+    background: var(--cyan);
+    color: #06060a;
+    font-weight: 700;
+  }
+  .btn-primary:hover { background: var(--cyan-bright); transform: translateY(-1px); box-shadow: 0 4px 20px rgba(99,179,237,0.3); }
+  .btn-primary:active { transform: translateY(0); }
+  .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; transform: none; box-shadow: none; }
+
+  .btn-ghost {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+  }
+  .btn-ghost:hover { border-color: rgba(99,179,237,0.3); color: var(--cyan); }
+
+  .btn-danger {
+    background: rgba(252,129,129,0.1);
+    border: 1px solid rgba(252,129,129,0.2);
+    color: var(--red);
+  }
+  .btn-danger:hover { background: rgba(252,129,129,0.2); }
+
+  .btn-full { width: 100%; }
+
+  /* ── STEP LOADING ── */
+  .steps {
+    margin-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .step-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    opacity: 0;
+    transform: translateX(-8px);
+    transition: all 0.4s ease;
+  }
+
+  .step-item.visible {
+    opacity: 1;
+    transform: translateX(0);
+  }
+
+  .step-item .step-icon { font-size: 14px; }
+
+  /* ── RESULT ── */
+  #result-section { display: none; }
+
+  .result-header {
+    display: flex;
+    gap: 16px;
+    align-items: center;
+    margin-bottom: 20px;
+  }
+
+  .profile-pic-wrap {
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  .profile-pic {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    border: 2px solid var(--border-active);
+    object-fit: cover;
+    background: var(--surface3);
+  }
+
+  .profile-pic-ring {
+    position: absolute;
+    inset: -4px;
+    border-radius: 50%;
+    border: 1px solid rgba(99,179,237,0.2);
+    animation: spin-slow 8s linear infinite;
+  }
+
+  @keyframes spin-slow { to { transform: rotate(360deg); } }
+
+  .result-info { flex: 1; }
+
+  .result-username {
+    font-size: 22px;
+    font-weight: 800;
+    color: var(--text);
+    margin-bottom: 3px;
+  }
+
+  .result-session {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  /* Status badge */
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 14px;
+    border-radius: 999px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    margin-top: 8px;
+  }
+
+  .status-top { background: rgba(99,179,237,0.12); border: 1px solid rgba(99,179,237,0.3); color: var(--cyan); }
+  .status-completed { background: rgba(104,211,145,0.12); border: 1px solid rgba(104,211,145,0.3); color: var(--green); }
+  .status-verified { background: rgba(246,173,85,0.12); border: 1px solid rgba(246,173,85,0.3); color: var(--orange); }
+  .status-incomplete { background: rgba(252,129,129,0.1); border: 1px solid rgba(252,129,129,0.25); color: var(--red); }
+
+  /* Progress ring */
+  .progress-ring-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    margin: 20px 0;
+  }
+
+  .progress-ring-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.1em;
+  }
+
+  /* Stats grid */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin: 16px 0;
+  }
+
+  .stat-box {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px;
+    text-align: center;
+  }
+
+  .stat-box-val {
+    font-size: 26px;
+    font-weight: 800;
+    line-height: 1;
+    margin-bottom: 4px;
+  }
+
+  .stat-box-lbl {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    color: var(--text-dim);
+    letter-spacing: 0.12em;
+  }
+
+  /* Progress bar */
+  .progress-bar-wrap { margin: 16px 0; }
+
+  .progress-bar-top {
+    display: flex;
+    justify-content: space-between;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+
+  .progress-bar-bg {
+    height: 6px;
+    background: var(--surface3);
+    border-radius: 99px;
+    overflow: hidden;
+  }
+
+  .progress-bar-fill {
+    height: 100%;
+    border-radius: 99px;
+    background: linear-gradient(90deg, var(--cyan) 0%, #a78bfa 100%);
+    transition: width 1.2s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 0 10px rgba(99,179,237,0.4);
+    width: 0%;
+  }
+
+  /* Tweet table */
+  .tweet-table-wrap {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+    margin: 16px 0;
+    max-height: 320px;
+    overflow-y: auto;
+  }
+
+  .tweet-table-header {
+    display: grid;
+    grid-template-columns: 40px 1fr 90px;
+    gap: 12px;
+    padding: 10px 14px;
+    background: var(--surface2);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.1em;
+    position: sticky;
+    top: 0;
+  }
+
+  .tweet-row {
+    display: grid;
+    grid-template-columns: 40px 1fr 90px;
+    gap: 12px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    align-items: center;
+    transition: background 0.15s;
+  }
+  .tweet-row:last-child { border-bottom: none; }
+  .tweet-row:hover { background: rgba(255,255,255,0.02); }
+  .tweet-row.missing { background: rgba(252,129,129,0.03); }
+
+  .tweet-num {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+
+  .tweet-url {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-decoration: none;
+  }
+  .tweet-url:hover { color: var(--cyan); }
+
+  .tweet-status {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 999px;
+    text-align: center;
+    justify-self: end;
+  }
+
+  .ts-done { background: rgba(104,211,145,0.12); border: 1px solid rgba(104,211,145,0.25); color: var(--green); }
+  .ts-miss { background: rgba(252,129,129,0.1); border: 1px solid rgba(252,129,129,0.2); color: var(--red); }
+
+  /* Download buttons */
+  .download-row {
+    display: flex;
+    gap: 10px;
+    margin-top: 16px;
+  }
+  .download-row .btn { flex: 1; }
+
+  /* ── ERROR / INFO ── */
+  .msg {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    margin-top: 10px;
+    display: none;
+  }
+  .msg.show { display: block; }
+  .msg-error { background: rgba(252,129,129,0.1); border: 1px solid rgba(252,129,129,0.2); color: var(--red); }
+  .msg-success { background: rgba(104,211,145,0.1); border: 1px solid rgba(104,211,145,0.2); color: var(--green); }
+  .msg-info { background: rgba(99,179,237,0.08); border: 1px solid rgba(99,179,237,0.15); color: var(--cyan); }
+
+  /* ── SKELETON ── */
+  .skel {
+    background: linear-gradient(90deg, var(--surface2) 0%, var(--surface3) 50%, var(--surface2) 100%);
+    background-size: 600px 100%;
+    animation: shimmer 1.8s linear infinite;
+    border-radius: 6px;
+  }
+  @keyframes shimmer { to { background-position: -600px 0; } }
+
+  /* ── ANIMATIONS ── */
+  @keyframes fadeUp {
+    from { opacity:0; transform:translateY(16px); }
+    to { opacity:1; transform:translateY(0); }
+  }
+
+  .delay-1 { animation-delay: 0.1s; }
+  .delay-2 { animation-delay: 0.2s; }
+  .delay-3 { animation-delay: 0.3s; }
+
+  /* ── SPINNER ── */
+  .spinner {
+    width: 14px; height: 14px;
+    border: 2px solid rgba(6,6,10,0.3);
+    border-top-color: #06060a;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+    flex-shrink: 0;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: var(--surface); }
+  ::-webkit-scrollbar-thumb { background: rgba(99,179,237,0.2); border-radius: 99px; }
+
+  /* ── FOOTER ── */
+  footer {
+    text-align: center;
+    padding: 24px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: 0.08em;
+    border-top: 1px solid var(--border);
+  }
+
+  /* ── NO SESSION STATE ── */
+  .no-session {
+    text-align: center;
+    padding: 40px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .no-session .icon { font-size: 36px; margin-bottom: 12px; }
+</style>
+</head>
+<body>
+
+<div class="grid-bg"></div>
+<div class="glow-1"></div>
+<div class="glow-2"></div>
+
+<!-- NAV -->
+<nav>
+  <div class="nav-brand">
+    <div class="dot"></div>
+    SESSION PROOF
+  </div>
+  <a href="admin.html" class="nav-link">ADMIN →</a>
+</nav>
+
+<div class="wrapper">
+
+  <!-- HERO -->
+  <div class="hero">
+    <div class="hero-badge">
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-4.714-6.231-5.401 6.231H2.746l7.73-8.835L1.254 2.25H8.08l4.259 5.63L18.244 2.25zm-1.161 17.52h1.833L7.084 4.126H5.117L17.083 19.77z"/></svg>
+      REPLY VERIFIER
+    </div>
+    <h1>Prove your<br><span>session replies</span></h1>
+    <p>Enter your username. We automatically scan your public replies and generate a shareable proof card.</p>
+  </div>
+
+  <!-- ACTIVE SESSION CARD -->
+  <div class="card delay-1" id="session-card">
+    <div class="card-label">
+      <span>ACTIVE SESSION</span>
+      <span id="session-live-badge" style="display:none; color:var(--green);">● LIVE</span>
+    </div>
+    <div id="session-loading">
+      <div class="skel" style="height:22px;width:200px;margin-bottom:10px;"></div>
+      <div class="skel" style="height:14px;width:300px;margin-bottom:14px;"></div>
+      <div class="skel" style="height:30px;width:80px;"></div>
+    </div>
+    <div id="session-content" style="display:none;">
+      <div class="session-title" id="session-title"></div>
+      <div class="session-desc" id="session-desc"></div>
+      <div class="session-stats">
+        <div class="stat-item">
+          <div class="stat-val" id="session-tweet-count">—</div>
+          <div class="stat-lbl">TWEETS</div>
+        </div>
+        <div class="stat-item">
+          <div class="stat-val" id="session-participants" style="color:var(--text-muted);">—</div>
+          <div class="stat-lbl">CHECKED</div>
+        </div>
+      </div>
+    </div>
+    <div id="session-none" class="no-session" style="display:none;">
+      <div class="icon">📭</div>
+      No active session right now. Check back later.
+    </div>
+  </div>
+
+  <!-- CHECK FORM -->
+  <div class="card delay-2" id="check-card">
+    <div class="card-label">YOUR X USERNAME</div>
+    <div class="input-group">
+      <div class="input-wrap">
+        <span class="at-sign">@</span>
+        <input type="text" id="username-input" placeholder="username" autocomplete="off" spellcheck="false">
+      </div>
+      <button class="btn btn-primary" id="check-btn" onclick="checkResult()">CHECK</button>
+    </div>
+    <div class="msg msg-error" id="check-error"></div>
+    <div class="steps" id="steps-wrap" style="display:none;">
+      <div class="step-item" id="step-1"><span class="step-icon">🔍</span> Opening your reply page...</div>
+      <div class="step-item" id="step-2"><span class="step-icon">📜</span> Scrolling through replies...</div>
+      <div class="step-item" id="step-3"><span class="step-icon">🔗</span> Extracting parent tweet IDs...</div>
+      <div class="step-item" id="step-4"><span class="step-icon">✅</span> Comparing with session tasks...</div>
+      <div class="step-item" id="step-5"><span class="step-icon">🎯</span> Building your report...</div>
+    </div>
+    <p style="font-family:var(--font-mono);font-size:10px;color:var(--text-dim);margin-top:12px;">
+      ✓ No screenshots &nbsp;·&nbsp; ✓ Replies only &nbsp;·&nbsp; ✓ Auto-detected
+    </p>
+  </div>
+
+  <!-- RESULT SECTION -->
+  <div id="result-section">
+    <div class="card" style="animation: fadeUp 0.5s ease both;">
+      <!-- Profile + username -->
+      <div class="result-header">
+        <div class="profile-pic-wrap">
+          <img class="profile-pic" id="profile-img" src="" alt="Profile">
+          <div class="profile-pic-ring"></div>
+        </div>
+        <div class="result-info">
+          <div class="result-username" id="result-username"></div>
+          <div class="result-session" id="result-session-name"></div>
+          <div id="result-status-badge" class="status-badge"></div>
+        </div>
+      </div>
+
+      <!-- Stats grid -->
+      <div class="stats-grid">
+        <div class="stat-box">
+          <div class="stat-box-val" id="res-completed" style="color:var(--cyan);">0</div>
+          <div class="stat-box-lbl">REPLIED</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-box-val" id="res-total" style="color:var(--text-muted);">0</div>
+          <div class="stat-box-lbl">TOTAL</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-box-val" id="res-missing" style="color:var(--red);">0</div>
+          <div class="stat-box-lbl">MISSING</div>
+        </div>
+      </div>
+
+      <!-- Progress bar -->
+      <div class="progress-bar-wrap">
+        <div class="progress-bar-top">
+          <span>COMPLETION</span>
+          <span id="res-rate" style="color:var(--cyan);">0%</span>
+        </div>
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="progress-fill"></div>
+        </div>
+      </div>
+
+      <!-- Tweet breakdown -->
+      <div class="card-label" style="margin-top:16px;">TWEET BREAKDOWN</div>
+      <div class="tweet-table-wrap">
+        <div class="tweet-table-header">
+          <span>#</span><span>TWEET</span><span style="text-align:right">STATUS</span>
+        </div>
+        <div id="tweet-rows"></div>
+      </div>
+
+      <!-- Download -->
+      <div class="download-row">
+        <button class="btn btn-primary" onclick="downloadCard('png')">
+          ⬇ Download Card (PNG)
+        </button>
+        <button class="btn btn-ghost" onclick="downloadCard('pdf')">
+          ⬇ PDF Report
+        </button>
+      </div>
+
+      <p style="font-family:var(--font-mono);font-size:10px;color:var(--text-dim);text-align:center;margin-top:12px;" id="res-timestamp"></p>
+    </div>
+  </div>
+
+</div><!-- /wrapper -->
+
+<footer>SESSION PROOF CHECKER &nbsp;·&nbsp; REPLIES ONLY &nbsp;·&nbsp; NO SCREENSHOTS NEEDED</footer>
+
+<!-- HIDDEN CANVAS FOR REPORT CARD -->
+<canvas id="report-canvas" style="display:none;"></canvas>
+
+<script>
+// ============================================================
+// CONFIG — Replace with your actual Supabase values
+// ============================================================
+const SUPABASE_URL = 'https://mcfmqlnraczhlduoxiek.supabase.co/rest/v1/';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1jZm1xbG5yYWN6aGxkdW94aWVrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk1MDg2OTEsImV4cCI6MjA5NTA4NDY5MX0.ixYx0k5eapbUYJxRhADgQV1mhcMS9Xuu7MmG9Syx3UU';
+const CORS_PROXY = 'https://api.allorigins.win/get?url=';
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+// ============================================================
+// STATE
+// ============================================================
+let activeSession = null;
+let sessionTweets = [];
+let lastResult = null;
+
+// ============================================================
+// INIT
+// ============================================================
+document.addEventListener('DOMContentLoaded', () => {
+  loadSession();
+  document.getElementById('username-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') checkResult();
+  });
+});
+
+// ============================================================
+// LOAD ACTIVE SESSION
+// ============================================================
+async function loadSession() {
+  const { data: sessions } = await sb
+    .from('sessions')
+    .select('*')
+    .eq('is_active', true)
+    .limit(1);
+
+  document.getElementById('session-loading').style.display = 'none';
+
+  if (!sessions || sessions.length === 0) {
+    document.getElementById('session-none').style.display = 'block';
+    document.getElementById('check-btn').disabled = true;
+    return;
+  }
+
+  activeSession = sessions[0];
+
+  const { data: tweets } = await sb
+    .from('session_tweets')
+    .select('*')
+    .eq('session_id', activeSession.id)
+    .order('position');
+
+  sessionTweets = tweets || [];
+
+  const { count } = await sb
+    .from('check_results')
+    .select('*', { count: 'exact', head: true })
+    .eq('session_id', activeSession.id);
+
+  document.getElementById('session-content').style.display = 'block';
+  document.getElementById('session-live-badge').style.display = 'inline';
+  document.getElementById('session-title').textContent = activeSession.title;
+  document.getElementById('session-desc').textContent = activeSession.description || '';
+  document.getElementById('session-tweet-count').textContent = sessionTweets.length;
+  document.getElementById('session-participants').textContent = count || 0;
+}
+
+// ============================================================
+// SCRAPE X REPLIES via CORS proxy
+// ============================================================
+async function scrapeReplies(username) {
+  const url = `https://x.com/${username}/with_replies`;
+  const proxied = CORS_PROXY + encodeURIComponent(url);
+
+  const resp = await fetch(proxied, { signal: AbortSignal.timeout(25000) });
+  const json = await resp.json();
+  const html = json.contents || '';
+
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+
+  const repliedIds = new Set();
+
+  // Method 1: look for tweet URL patterns in raw HTML
+  const tweetPattern = /\/status\/(\d{10,20})/g;
+  const allMatches = [...html.matchAll(tweetPattern)];
+
+  // We need pairs: when X renders a reply, both the reply
+  // and the parent tweet URL appear close together.
+  // The parent tweet URL appears BEFORE the user's reply in the markup.
+  // Strategy: find all status IDs, then look for the known session tweet IDs.
+  for (const m of allMatches) {
+    repliedIds.add(m[1]);
+  }
+
+  // Method 2: look for in_reply_to patterns in embedded JSON
+  const replyToPattern = /"in_reply_to_status_id_str"\s*:\s*"(\d+)"/g;
+  const replyMatches = [...html.matchAll(replyToPattern)];
+  for (const m of replyMatches) {
+    repliedIds.add(m[1]);
+  }
+
+  return repliedIds;
+}
+
+// ============================================================
+// MAIN CHECK FLOW
+// ============================================================
+async function checkResult() {
+  const rawUsername = document.getElementById('username-input').value.trim();
+  const username = rawUsername.replace(/^@/, '').toLowerCase();
+
+  const errEl = document.getElementById('check-error');
+  errEl.className = 'msg';
+
+  if (!username) { showError(errEl, 'Please enter your X username.'); return; }
+  if (!/^[a-zA-Z0-9_]{1,15}$/.test(username)) { showError(errEl, 'Invalid username format.'); return; }
+  if (!activeSession) { showError(errEl, 'No active session found.'); return; }
+
+  // UI: loading state
+  const btn = document.getElementById('check-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> Scanning...';
+  document.getElementById('result-section').style.display = 'none';
+  document.getElementById('steps-wrap').style.display = 'flex';
+  resetSteps();
+
+  try {
+    await showStep(1, 600);
+    await showStep(2, 1200);
+
+    let repliedIds;
+    try {
+      repliedIds = await scrapeReplies(username);
+    } catch (e) {
+      repliedIds = new Set(); // proceed with empty set, will show all as missing
+    }
+
+    await showStep(3, 400);
+    await showStep(4, 600);
+
+    // Match against session tweets
+    const tweetResults = sessionTweets.map(st => ({
+      tweetId: st.tweet_id,
+      tweetUrl: st.tweet_url,
+      position: st.position,
+      completed: repliedIds.has(st.tweet_id)
+    }));
+
+    const completedCount = tweetResults.filter(r => r.completed).length;
+    const totalCount = sessionTweets.length;
+    const completionRate = totalCount > 0 ? Math.round((completedCount / totalCount) * 1000) / 10 : 0;
+    const status = getStatus(completionRate);
+
+    // Fetch profile picture
+    const profilePic = await fetchProfilePic(username);
+
+    const result = {
+      username, profilePic,
+      session: activeSession,
+      completedCount, totalCount, completionRate,
+      tweetResults, status,
+      checkedAt: new Date().toISOString()
+    };
+
+    lastResult = result;
+
+    // Save to DB
+    await sb.from('check_results').upsert({
+      session_id: activeSession.id,
+      username,
+      completed_count: completedCount,
+      total_count: totalCount,
+      completion_rate: completionRate,
+      tweet_results: tweetResults
+    }, { onConflict: 'session_id,username' });
+
+    await showStep(5, 300);
+    await delay(300);
+
+    renderResult(result);
+
+  } catch (e) {
+    showError(errEl, 'Failed to fetch replies. Check username or try again.');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = 'CHECK';
+    document.getElementById('steps-wrap').style.display = 'none';
+  }
+}
+
+// ============================================================
+// RENDER RESULT
+// ============================================================
+function renderResult(r) {
+  document.getElementById('result-section').style.display = 'block';
+  document.getElementById('result-section').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  // Profile pic
+  const img = document.getElementById('profile-img');
+  img.src = r.profilePic || `https://ui-avatars.com/api/?name=${r.username}&background=16161f&color=63b3ed&size=128&bold=true`;
+  img.onerror = () => { img.src = `https://ui-avatars.com/api/?name=${r.username}&background=16161f&color=63b3ed&size=128&bold=true`; };
+
+  document.getElementById('result-username').textContent = '@' + r.username;
+  document.getElementById('result-session-name').textContent = r.session.title;
+
+  const statusMap = {
+    TOP_PARTICIPANT: { label: '🏆 TOP PARTICIPANT', cls: 'status-top' },
+    COMPLETED: { label: '✓ COMPLETED', cls: 'status-completed' },
+    VERIFIED: { label: '◉ VERIFIED', cls: 'status-verified' },
+    INCOMPLETE: { label: '✗ INCOMPLETE', cls: 'status-incomplete' }
+  };
+  const sc = statusMap[r.status];
+  const badge = document.getElementById('result-status-badge');
+  badge.textContent = sc.label;
+  badge.className = 'status-badge ' + sc.cls;
+
+  // Stats
+  document.getElementById('res-completed').textContent = r.completedCount;
+  document.getElementById('res-total').textContent = r.totalCount;
+  document.getElementById('res-missing').textContent = r.totalCount - r.completedCount;
+  document.getElementById('res-rate').textContent = r.completionRate + '%';
+
+  // Progress bar animate
+  setTimeout(() => {
+    document.getElementById('progress-fill').style.width = r.completionRate + '%';
+  }, 100);
+
+  // Tweet rows
+  const rowsEl = document.getElementById('tweet-rows');
+  rowsEl.innerHTML = r.tweetResults.map(t => `
+    <div class="tweet-row ${t.completed ? '' : 'missing'}">
+      <span class="tweet-num">#${t.position}</span>
+      <a class="tweet-url" href="${t.tweetUrl}" target="_blank" rel="noopener">${t.tweetUrl.replace('https://x.com/','').replace('https://twitter.com/','')}</a>
+      <span class="tweet-status ${t.completed ? 'ts-done' : 'ts-miss'}">${t.completed ? '✓ Done' : '✗ Miss'}</span>
+    </div>
+  `).join('');
+
+  const d = new Date(r.checkedAt);
+  document.getElementById('res-timestamp').textContent =
+    'Checked: ' + d.toUTCString();
+}
+
+// ============================================================
+// FETCH PROFILE PICTURE
+// ============================================================
+async function fetchProfilePic(username) {
+  // Try unavatar service (free, no API key)
+  const sources = [
+    `https://unavatar.io/twitter/${username}`,
+    `https://unavatar.io/x/${username}`,
+  ];
+  // Return first source — browser will fall back via img.onerror
+  return sources[0];
+}
+
+// ============================================================
+// REPORT CARD GENERATOR (Canvas)
+// ============================================================
+async function downloadCard(format) {
+  if (!lastResult) return;
+  const r = lastResult;
+
+  const W = 900, H = 520;
+  const canvas = document.getElementById('report-canvas');
+  canvas.width = W;
+  canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  const statusColors = {
+    TOP_PARTICIPANT: '#63b3ed',
+    COMPLETED: '#68d391',
+    VERIFIED: '#f6ad55',
+    INCOMPLETE: '#fc8181'
+  };
+  const accent = statusColors[r.status] || '#63b3ed';
+  const rate = r.completionRate / 100;
+
+  // ── BG
+  const bg = ctx.createLinearGradient(0, 0, W, H);
+  bg.addColorStop(0, '#06060a');
+  bg.addColorStop(0.5, '#0c0c14');
+  bg.addColorStop(1, '#06060a');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, W, H);
+
+  // Grid
+  ctx.strokeStyle = 'rgba(99,179,237,0.03)';
+  ctx.lineWidth = 0.5;
+  for (let x = 0; x <= W; x += 48) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,H); ctx.stroke(); }
+  for (let y = 0; y <= H; y += 48) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(W,y); ctx.stroke(); }
+
+  // Glow blobs
+  const g1 = ctx.createRadialGradient(120, 100, 0, 120, 100, 350);
+  g1.addColorStop(0, accent + '12'); g1.addColorStop(1, 'transparent');
+  ctx.fillStyle = g1; ctx.fillRect(0,0,W,H);
+
+  const g2 = ctx.createRadialGradient(W-100, H-80, 0, W-100, H-80, 280);
+  g2.addColorStop(0, 'rgba(167,139,250,0.1)'); g2.addColorStop(1, 'transparent');
+  ctx.fillStyle = g2; ctx.fillRect(0,0,W,H);
+
+  // Top accent line
+  const tl = ctx.createLinearGradient(0,0,W,0);
+  tl.addColorStop(0,'transparent'); tl.addColorStop(0.25,accent);
+  tl.addColorStop(0.75,'#a78bfa'); tl.addColorStop(1,'transparent');
+  ctx.strokeStyle = tl; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(W,0); ctx.stroke();
+
+  // Outer border
+  ctx.strokeStyle = accent + '30'; ctx.lineWidth = 1;
+  ctx.strokeRect(1,1,W-2,H-2);
+
+  // ── Profile Picture (circle, left side)
+  const pfpSize = 80, pfpX = 52, pfpY = 80;
+  try {
+    const pfpImg = await loadImage(r.profilePic ||
+      `https://ui-avatars.com/api/?name=${r.username}&background=16161f&color=63b3ed&size=128&bold=true`);
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(pfpX, pfpY, pfpSize/2, 0, Math.PI*2);
+    ctx.closePath();
+    ctx.clip();
+    ctx.drawImage(pfpImg, pfpX - pfpSize/2, pfpY - pfpSize/2, pfpSize, pfpSize);
+    ctx.restore();
+  } catch {}
+
+  // Profile pic ring
+  ctx.strokeStyle = accent + '60'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(pfpX, pfpY, pfpSize/2 + 4, 0, Math.PI*2); ctx.stroke();
+
+  // ── Username & Session
+  ctx.fillStyle = '#e2e8f0';
+  ctx.font = 'bold 32px Syne, Arial';
+  ctx.fillText('@' + r.username, 108, 78);
+
+  ctx.fillStyle = 'rgba(226,232,240,0.4)';
+  ctx.font = '13px JetBrains Mono, monospace';
+  ctx.fillText(r.session.title, 108, 100);
+
+  // Status badge
+  const statusLabels = {
+    TOP_PARTICIPANT: '🏆 TOP PARTICIPANT',
+    COMPLETED: '✓ COMPLETED',
+    VERIFIED: '◉ VERIFIED',
+    INCOMPLETE: '✗ INCOMPLETE'
+  };
+  const badgeTxt = statusLabels[r.status] || r.status;
+  ctx.font = 'bold 11px JetBrains Mono, monospace';
+  const bw = ctx.measureText(badgeTxt).width + 24;
+  const bx = 108, by = 114;
+  ctx.fillStyle = accent + '18';
+  roundRect(ctx, bx, by, bw, 22, 11); ctx.fill();
+  ctx.strokeStyle = accent + '50'; ctx.lineWidth = 1;
+  roundRect(ctx, bx, by, bw, 22, 11); ctx.stroke();
+  ctx.fillStyle = accent;
+  ctx.fillText(badgeTxt, bx + 12, by + 15);
+
+  // ── Divider
+  ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(36,155); ctx.lineTo(W-36,155); ctx.stroke();
+
+  // ── Stats (3 columns)
+  const stats = [
+    { val: r.completedCount, lbl: 'REPLIED', col: accent },
+    { val: r.totalCount, lbl: 'TOTAL TASKS', col: 'rgba(226,232,240,0.5)' },
+    { val: r.totalCount - r.completedCount, lbl: 'MISSING', col: '#fc8181' },
+    { val: r.completionRate + '%', lbl: 'COMPLETION', col: accent }
+  ];
+  const sw = (W - 72) / 4;
+  stats.forEach((s, i) => {
+    const sx = 36 + i * sw + sw/2;
+    ctx.fillStyle = s.col;
+    ctx.font = 'bold 34px Syne, Arial';
+    ctx.textAlign = 'center';
+    ctx.fillText(String(s.val), sx, 200);
+    ctx.fillStyle = 'rgba(226,232,240,0.25)';
+    ctx.font = '10px JetBrains Mono, monospace';
+    ctx.fillText(s.lbl, sx, 220);
+  });
+  ctx.textAlign = 'left';
+
+  // ── Progress bar
+  const bary = 245, barH = 8, barX = 36, barW = W - 72;
+  ctx.fillStyle = 'rgba(255,255,255,0.05)';
+  roundRect(ctx, barX, bary, barW, barH, 4); ctx.fill();
+
+  const pg = ctx.createLinearGradient(barX, 0, barX + barW, 0);
+  pg.addColorStop(0, accent); pg.addColorStop(1, '#a78bfa');
+  ctx.fillStyle = pg;
+  roundRect(ctx, barX, bary, Math.max(barH, barW * rate), barH, 4); ctx.fill();
+
+  // ── Tweet results mini grid (up to 15 items)
+  ctx.fillStyle = 'rgba(226,232,240,0.2)';
+  ctx.font = '10px JetBrains Mono, monospace';
+  ctx.fillText('TWEET BREAKDOWN', 36, 275);
+
+  const items = r.tweetResults.slice(0, 20);
+  const cols = 4, rows_n = Math.ceil(items.length / cols);
+  const iw = (W - 72) / cols;
+  items.forEach((t, i) => {
+    const col = i % cols, row = Math.floor(i / cols);
+    const tx = 36 + col * iw;
+    const ty = 292 + row * 22;
+    ctx.fillStyle = t.completed ? 'rgba(104,211,145,0.8)' : 'rgba(252,129,129,0.7)';
+    ctx.font = '11px JetBrains Mono, monospace';
+    ctx.fillText(t.completed ? '✓' : '✗', tx, ty);
+    ctx.fillStyle = 'rgba(226,232,240,0.3)';
+    ctx.fillText(`#${t.position}`, tx + 16, ty);
+  });
+  if (r.tweetResults.length > 20) {
+    ctx.fillStyle = 'rgba(226,232,240,0.2)';
+    ctx.fillText(`+${r.tweetResults.length - 20} more`, 36, 292 + rows_n * 22 + 2);
+  }
+
+  // ── X logo (top right)
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.font = 'bold 22px Arial';
+  ctx.textAlign = 'right';
+  ctx.fillText('𝕏', W - 36, 46);
+  ctx.fillStyle = 'rgba(255,255,255,0.2)';
+  ctx.font = '10px JetBrains Mono, monospace';
+  ctx.fillText('SESSION PROOF', W - 36, 62);
+  ctx.textAlign = 'left';
+
+  // ── Footer
+  ctx.fillStyle = 'rgba(226,232,240,0.12)';
+  ctx.font = '9px JetBrains Mono, monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText('Generated: ' + new Date(r.checkedAt).toUTCString(), W - 36, H - 16);
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(226,232,240,0.08)';
+  ctx.fillText('sessionproof.vercel.app', W/2, H - 16);
+  ctx.textAlign = 'left';
+
+  // ── Bottom accent line
+  const bl = ctx.createLinearGradient(0,H,W,H);
+  bl.addColorStop(0,'transparent'); bl.addColorStop(0.5,'rgba(99,179,237,0.3)'); bl.addColorStop(1,'transparent');
+  ctx.strokeStyle = bl; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0,H-1); ctx.lineTo(W,H-1); ctx.stroke();
+
+  // ── Download
+  const fname = `proof-@${r.username}-${r.session.title.replace(/\s+/g,'-')}.${format}`;
+  if (format === 'png') {
+    const a = document.createElement('a');
+    a.href = canvas.toDataURL('image/png', 1.0);
+    a.download = fname;
+    a.click();
+  } else {
+    // PDF via jsPDF from CDN
+    if (!window.jspdf) {
+      const script = document.createElement('script');
+      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+      document.head.appendChild(script);
+      await new Promise(res => script.onload = res);
+    }
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF({ orientation: 'landscape', unit: 'px', format: [W, H] });
+    pdf.addImage(canvas.toDataURL('image/png',1.0), 'PNG', 0, 0, W, H);
+    pdf.save(fname);
+  }
+}
+
+// ============================================================
+// HELPERS
+// ============================================================
+function getStatus(rate) {
+  if (rate >= 95) return 'TOP_PARTICIPANT';
+  if (rate >= 80) return 'COMPLETED';
+  if (rate >= 50) return 'VERIFIED';
+  return 'INCOMPLETE';
+}
+
+function showError(el, msg) {
+  el.textContent = '⚠ ' + msg;
+  el.className = 'msg msg-error show';
+}
+
+function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function showStep(n, wait) {
+  const el = document.getElementById('step-' + n);
+  if (el) el.classList.add('visible');
+  await delay(wait);
+}
+
+function resetSteps() {
+  for (let i = 1; i <= 5; i++) {
+    const el = document.getElementById('step-' + i);
+    if (el) el.classList.remove('visible');
+  }
+}
+
+function loadImage(src) {
+  return new Promise((res, rej) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => res(img);
+    img.onerror = rej;
+    img.src = src;
+  });
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.lineTo(x+w-r, y);
+  ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+  ctx.lineTo(x+w, y+h-r);
+  ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  ctx.lineTo(x+r, y+h);
+  ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+  ctx.lineTo(x, y+r);
+  ctx.quadraticCurveTo(x, y, x+r, y);
+  ctx.closePath();
+}
+</script>
+</body>
+</html>

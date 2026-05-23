@@ -1,0 +1,836 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin — Session Proof</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root {
+    --bg: #06060a;
+    --surface: #0f0f17;
+    --surface2: #16161f;
+    --surface3: #1d1d28;
+    --border: rgba(255,255,255,0.07);
+    --border-active: rgba(99,179,237,0.5);
+    --cyan: #63b3ed;
+    --cyan-bright: #90cdf4;
+    --green: #68d391;
+    --red: #fc8181;
+    --orange: #f6ad55;
+    --text: #e2e8f0;
+    --text-muted: rgba(226,232,240,0.4);
+    --text-dim: rgba(226,232,240,0.2);
+    --radius: 14px;
+    --font-display: 'Syne', sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:var(--font-display); background:var(--bg); color:var(--text); min-height:100vh; overflow-x:hidden; }
+
+  body::before {
+    content:''; position:fixed; inset:0; pointer-events:none; z-index:9999;
+    background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.03'/%3E%3C/svg%3E");
+  }
+
+  .grid-bg {
+    position:fixed; inset:0; pointer-events:none;
+    background-image: linear-gradient(rgba(99,179,237,0.025) 1px, transparent 1px), linear-gradient(90deg, rgba(99,179,237,0.025) 1px, transparent 1px);
+    background-size:48px 48px;
+  }
+  .glow-tl { position:fixed; top:-200px; left:-100px; width:500px; height:500px; background:radial-gradient(circle, rgba(99,179,237,0.05) 0%, transparent 70%); pointer-events:none; }
+  .glow-br { position:fixed; bottom:-150px; right:-100px; width:400px; height:400px; background:radial-gradient(circle, rgba(167,139,250,0.04) 0%, transparent 70%); pointer-events:none; }
+
+  /* ── NAV ── */
+  nav {
+    position:relative; z-index:10;
+    display:flex; align-items:center; justify-content:space-between;
+    padding:18px 24px; border-bottom:1px solid var(--border);
+  }
+  .nav-brand { display:flex; align-items:center; gap:10px; font-family:var(--font-mono); font-size:12px; color:var(--text-muted); letter-spacing:0.06em; }
+  .nav-brand .dot { width:7px; height:7px; border-radius:50%; background:var(--cyan); box-shadow:0 0 8px var(--cyan); animation:pdot 2s ease-in-out infinite; }
+  @keyframes pdot { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.6)} }
+  .nav-right { display:flex; align-items:center; gap:12px; }
+  .admin-badge { font-family:var(--font-mono); font-size:10px; color:var(--orange); background:rgba(246,173,85,0.1); border:1px solid rgba(246,173,85,0.2); padding:4px 10px; border-radius:99px; letter-spacing:0.1em; }
+
+  /* ── LAYOUT ── */
+  .page { position:relative; z-index:1; }
+  #login-page { display:flex; align-items:center; justify-content:center; min-height:calc(100vh - 60px); padding:20px; }
+  #admin-page { display:none; max-width:900px; margin:0 auto; padding:32px 20px 80px; }
+
+  /* ── LOGIN CARD ── */
+  .login-card {
+    width:100%; max-width:380px;
+    background:var(--surface); border:1px solid var(--border);
+    border-radius:var(--radius); padding:36px 32px;
+    animation:fadeUp 0.5s ease both;
+  }
+  .login-icon { font-size:36px; text-align:center; margin-bottom:16px; }
+  .login-title { font-size:22px; font-weight:800; text-align:center; margin-bottom:6px; }
+  .login-sub { font-family:var(--font-mono); font-size:11px; color:var(--text-dim); text-align:center; margin-bottom:28px; }
+
+  /* ── FORM ELEMENTS ── */
+  .field { margin-bottom:14px; }
+  .field label { display:block; font-family:var(--font-mono); font-size:10px; color:var(--text-dim); letter-spacing:0.12em; margin-bottom:6px; }
+  input[type="email"], input[type="password"], input[type="text"], textarea {
+    width:100%; background:var(--surface2); border:1px solid var(--border); border-radius:10px;
+    padding:11px 14px; font-family:var(--font-mono); font-size:13px; color:var(--text); outline:none;
+    transition:border-color 0.2s, box-shadow 0.2s;
+  }
+  input:focus, textarea:focus {
+    border-color:var(--border-active);
+    box-shadow:0 0 0 3px rgba(99,179,237,0.07), 0 0 16px rgba(99,179,237,0.07);
+  }
+  textarea { resize:vertical; min-height:130px; line-height:1.65; padding:12px 14px; }
+
+  /* ── BUTTONS ── */
+  .btn {
+    display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    padding:11px 20px; border-radius:10px; font-family:var(--font-mono); font-size:12px;
+    font-weight:500; letter-spacing:0.07em; cursor:pointer; border:none; transition:all 0.2s; white-space:nowrap;
+  }
+  .btn-primary { background:var(--cyan); color:#06060a; font-weight:700; }
+  .btn-primary:hover { background:var(--cyan-bright); transform:translateY(-1px); box-shadow:0 4px 18px rgba(99,179,237,0.3); }
+  .btn-primary:active { transform:translateY(0); }
+  .btn-primary:disabled { opacity:0.4; cursor:not-allowed; transform:none; box-shadow:none; }
+  .btn-ghost { background:transparent; border:1px solid var(--border); color:var(--text-muted); }
+  .btn-ghost:hover { border-color:rgba(99,179,237,0.3); color:var(--cyan); }
+  .btn-success { background:rgba(104,211,145,0.12); border:1px solid rgba(104,211,145,0.25); color:var(--green); }
+  .btn-success:hover { background:rgba(104,211,145,0.2); }
+  .btn-danger { background:rgba(252,129,129,0.1); border:1px solid rgba(252,129,129,0.2); color:var(--red); }
+  .btn-danger:hover { background:rgba(252,129,129,0.18); }
+  .btn-warn { background:rgba(246,173,85,0.1); border:1px solid rgba(246,173,85,0.2); color:var(--orange); }
+  .btn-warn:hover { background:rgba(246,173,85,0.18); }
+  .btn-full { width:100%; }
+  .btn-sm { padding:7px 14px; font-size:11px; }
+
+  /* ── MSGS ── */
+  .msg { font-family:var(--font-mono); font-size:11px; padding:10px 13px; border-radius:8px; margin-top:10px; display:none; line-height:1.5; }
+  .msg.show { display:block; }
+  .msg-error { background:rgba(252,129,129,0.08); border:1px solid rgba(252,129,129,0.2); color:var(--red); }
+  .msg-success { background:rgba(104,211,145,0.08); border:1px solid rgba(104,211,145,0.2); color:var(--green); }
+  .msg-info { background:rgba(99,179,237,0.07); border:1px solid rgba(99,179,237,0.15); color:var(--cyan); }
+
+  /* ── SECTION HEADER ── */
+  .section-head {
+    display:flex; align-items:center; justify-content:space-between;
+    margin-bottom:18px; padding-bottom:14px; border-bottom:1px solid var(--border);
+  }
+  .section-title { font-size:18px; font-weight:800; }
+  .section-sub { font-family:var(--font-mono); font-size:10px; color:var(--text-dim); margin-top:2px; }
+
+  /* ── TABS ── */
+  .tabs { display:flex; gap:4px; margin-bottom:24px; }
+  .tab {
+    padding:9px 18px; border-radius:9px; font-family:var(--font-mono); font-size:11px;
+    letter-spacing:0.08em; cursor:pointer; border:1px solid transparent;
+    color:var(--text-dim); transition:all 0.2s; background:transparent;
+  }
+  .tab.active { background:var(--surface2); border-color:var(--border); color:var(--cyan); }
+  .tab:hover:not(.active) { color:var(--text-muted); }
+  .tab-panel { display:none; animation:fadeUp 0.3s ease both; }
+  .tab-panel.active { display:block; }
+
+  /* ── SESSION LIST ── */
+  .session-item {
+    background:var(--surface); border:1px solid var(--border); border-radius:var(--radius);
+    padding:18px 20px; margin-bottom:10px; transition:border-color 0.2s;
+    animation:fadeUp 0.4s ease both;
+  }
+  .session-item:hover { border-color:rgba(99,179,237,0.12); }
+  .session-item.is-active { border-color:rgba(104,211,145,0.25); background:rgba(104,211,145,0.02); }
+
+  .session-item-top { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+  .session-item-meta { flex:1; min-width:0; }
+  .session-item-title { font-size:16px; font-weight:700; margin-bottom:4px; display:flex; align-items:center; gap:8px; }
+  .live-dot { width:7px; height:7px; border-radius:50%; background:var(--green); box-shadow:0 0 6px var(--green); animation:pdot 2s ease-in-out infinite; flex-shrink:0; }
+  .session-item-desc { font-family:var(--font-mono); font-size:11px; color:var(--text-muted); margin-bottom:10px; line-height:1.5; }
+  .session-item-stats { display:flex; gap:16px; }
+  .sstat { font-family:var(--font-mono); font-size:10px; color:var(--text-dim); }
+  .sstat span { color:var(--cyan); font-weight:600; }
+  .session-item-actions { display:flex; gap:6px; flex-shrink:0; flex-wrap:wrap; justify-content:flex-end; }
+
+  /* ── CHECK RESULT (admin side) ── */
+  .admin-result-card {
+    background:var(--surface2); border:1px solid var(--border); border-radius:10px;
+    padding:16px; margin-top:14px;
+  }
+  .arc-header { display:flex; align-items:center; gap:12px; margin-bottom:14px; }
+  .arc-pfp { width:44px; height:44px; border-radius:50%; object-fit:cover; background:var(--surface3); border:1px solid var(--border-active); flex-shrink:0; }
+  .arc-username { font-size:16px; font-weight:700; }
+  .arc-session { font-family:var(--font-mono); font-size:10px; color:var(--text-muted); }
+  .arc-stats { display:flex; gap:12px; margin-bottom:12px; flex-wrap:wrap; }
+  .arc-stat { font-family:var(--font-mono); font-size:11px; }
+  .arc-stat .v { font-size:20px; font-weight:800; line-height:1; display:block; }
+
+  /* ── MINI TABLE ── */
+  .mini-table { border:1px solid var(--border); border-radius:8px; overflow:hidden; max-height:260px; overflow-y:auto; }
+  .mini-table-head { display:grid; grid-template-columns:36px 1fr 80px; gap:8px; padding:8px 12px; background:var(--surface3); font-family:var(--font-mono); font-size:9px; color:var(--text-dim); letter-spacing:0.12em; }
+  .mini-row { display:grid; grid-template-columns:36px 1fr 80px; gap:8px; padding:8px 12px; border-top:1px solid var(--border); align-items:center; }
+  .mini-row.miss { background:rgba(252,129,129,0.03); }
+  .mini-row:hover { background:rgba(255,255,255,0.02); }
+  .turl { font-family:var(--font-mono); font-size:10px; color:var(--text-muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-decoration:none; }
+  .turl:hover { color:var(--cyan); }
+  .ts { font-family:var(--font-mono); font-size:9px; font-weight:600; padding:2px 7px; border-radius:99px; justify-self:end; }
+  .ts.done { background:rgba(104,211,145,0.1); border:1px solid rgba(104,211,145,0.2); color:var(--green); }
+  .ts.miss { background:rgba(252,129,129,0.08); border:1px solid rgba(252,129,129,0.18); color:var(--red); }
+
+  /* ── PROGRESS BAR ── */
+  .pbar-wrap { margin:10px 0; }
+  .pbar-top { display:flex; justify-content:space-between; font-family:var(--font-mono); font-size:9px; color:var(--text-dim); margin-bottom:4px; }
+  .pbar-bg { height:5px; background:var(--surface3); border-radius:99px; overflow:hidden; }
+  .pbar-fill { height:100%; border-radius:99px; background:linear-gradient(90deg, var(--cyan), #a78bfa); transition:width 1s cubic-bezier(.4,0,.2,1); box-shadow:0 0 8px rgba(99,179,237,0.35); }
+
+  /* ── SKEL ── */
+  .skel { background:linear-gradient(90deg, var(--surface2) 0%, var(--surface3) 50%, var(--surface2) 100%); background-size:600px 100%; animation:shimmer 1.8s linear infinite; border-radius:6px; }
+  @keyframes shimmer { to { background-position:-600px 0; } }
+  .spinner { width:13px; height:13px; border:2px solid rgba(6,6,10,0.3); border-top-color:#06060a; border-radius:50%; animation:spin 0.7s linear infinite; flex-shrink:0; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .spinner-inv { width:13px; height:13px; border:2px solid rgba(255,255,255,0.1); border-top-color:var(--cyan); border-radius:50%; animation:spin 0.7s linear infinite; flex-shrink:0; }
+  @keyframes fadeUp { from{opacity:0;transform:translateY(14px)} to{opacity:1;transform:translateY(0)} }
+
+  /* ── MODAL ── */
+  .modal-overlay {
+    position:fixed; inset:0; z-index:100; display:none;
+    background:rgba(6,6,10,0.7); backdrop-filter:blur(6px);
+    align-items:center; justify-content:center; padding:20px;
+  }
+  .modal-overlay.show { display:flex; }
+  .modal {
+    width:100%; max-width:520px; background:var(--surface); border:1px solid var(--border);
+    border-radius:var(--radius); padding:28px; animation:fadeUp 0.3s ease both;
+    max-height:90vh; overflow-y:auto;
+  }
+  .modal-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:22px; }
+  .modal-title { font-size:17px; font-weight:800; }
+  .modal-close { background:none; border:none; color:var(--text-dim); font-size:22px; cursor:pointer; line-height:1; padding:0 4px; }
+  .modal-close:hover { color:var(--text); }
+  .url-count { font-family:var(--font-mono); font-size:10px; color:var(--cyan); margin-top:4px; }
+
+  /* ── EMPTY STATE ── */
+  .empty { text-align:center; padding:48px 20px; font-family:var(--font-mono); font-size:12px; color:var(--text-dim); }
+  .empty .eicon { font-size:40px; margin-bottom:12px; }
+
+  ::-webkit-scrollbar { width:4px; height:4px; }
+  ::-webkit-scrollbar-track { background:var(--surface); }
+  ::-webkit-scrollbar-thumb { background:rgba(99,179,237,0.2); border-radius:99px; }
+
+  footer { text-align:center; padding:20px; font-family:var(--font-mono); font-size:10px; color:var(--text-dim); border-top:1px solid var(--border); }
+
+  @media (max-width: 580px) {
+    .session-item-top { flex-direction:column; }
+    .session-item-actions { justify-content:flex-start; }
+    .arc-stats { gap:8px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="grid-bg"></div>
+<div class="glow-tl"></div>
+<div class="glow-br"></div>
+
+<!-- NAV -->
+<nav>
+  <div class="nav-brand">
+    <div class="dot"></div>
+    SESSION PROOF
+  </div>
+  <div class="nav-right">
+    <span class="admin-badge" id="admin-badge" style="display:none;">ADMIN</span>
+    <a href="index.html" style="font-family:var(--font-mono);font-size:11px;color:var(--text-dim);text-decoration:none;" onmouseover="this.style.color='var(--cyan)'" onmouseout="this.style.color='var(--text-dim)'">← USER PORTAL</a>
+    <button class="btn btn-ghost btn-sm" id="logout-btn" onclick="logout()" style="display:none;">LOGOUT</button>
+  </div>
+</nav>
+
+<!-- ══════════════════════════════════════════
+     LOGIN PAGE
+══════════════════════════════════════════ -->
+<div id="login-page">
+  <div class="login-card">
+    <div class="login-icon">🔐</div>
+    <div class="login-title">Admin Access</div>
+    <div class="login-sub">Sign in with your admin account</div>
+
+    <div class="field">
+      <label>EMAIL</label>
+      <input type="email" id="login-email" placeholder="admin@yourdomain.com" autocomplete="email">
+    </div>
+    <div class="field">
+      <label>PASSWORD</label>
+      <input type="password" id="login-password" placeholder="••••••••••••" autocomplete="current-password">
+    </div>
+    <div class="msg msg-error" id="login-error"></div>
+    <button class="btn btn-primary btn-full" id="login-btn" onclick="doLogin()" style="margin-top:6px;">
+      SIGN IN
+    </button>
+    <p style="font-family:var(--font-mono);font-size:10px;color:var(--text-dim);text-align:center;margin-top:14px;line-height:1.6;">
+      Admin accounts are created in Supabase Auth.<br>No password stored in code.
+    </p>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     ADMIN DASHBOARD
+══════════════════════════════════════════ -->
+<div id="admin-page">
+
+  <!-- TABS -->
+  <div class="tabs">
+    <button class="tab active" onclick="switchTab('sessions')">SESSIONS</button>
+    <button class="tab" onclick="switchTab('check')">CHECK USER</button>
+  </div>
+
+  <!-- ── TAB: SESSIONS ── -->
+  <div class="tab-panel active" id="tab-sessions">
+    <div class="section-head">
+      <div>
+        <div class="section-title">Sessions</div>
+        <div class="section-sub" id="sessions-sub">Loading...</div>
+      </div>
+      <button class="btn btn-primary" onclick="openCreateModal()">+ New Session</button>
+    </div>
+
+    <div class="msg msg-success" id="sessions-msg"></div>
+
+    <div id="sessions-list">
+      <div style="padding:20px 0;">
+        <div class="skel" style="height:90px;border-radius:14px;margin-bottom:10px;"></div>
+        <div class="skel" style="height:90px;border-radius:14px;margin-bottom:10px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── TAB: CHECK USER ── -->
+  <div class="tab-panel" id="tab-check">
+    <div class="section-head">
+      <div>
+        <div class="section-title">Check a User</div>
+        <div class="section-sub">Verify any username against the active session</div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:10px;margin-bottom:10px;">
+      <div style="flex:1;position:relative;">
+        <span style="position:absolute;left:13px;top:50%;transform:translateY(-50%);font-family:var(--font-mono);font-size:13px;color:var(--text-muted);pointer-events:none;">@</span>
+        <input type="text" id="admin-username" placeholder="username" autocomplete="off" spellcheck="false"
+          style="padding-left:28px;" onkeydown="if(event.key==='Enter')adminCheck()">
+      </div>
+      <button class="btn btn-primary" id="admin-check-btn" onclick="adminCheck()">CHECK</button>
+    </div>
+    <div class="msg msg-error" id="admin-check-error"></div>
+    <div id="admin-result-wrap" style="display:none;"></div>
+  </div>
+
+</div><!-- /admin-page -->
+
+<!-- ══════════════════════════════════════════
+     CREATE SESSION MODAL
+══════════════════════════════════════════ -->
+<div class="modal-overlay" id="create-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">New Session</div>
+      <button class="modal-close" onclick="closeCreateModal()">×</button>
+    </div>
+
+    <div class="field">
+      <label>SESSION TITLE *</label>
+      <input type="text" id="new-title" placeholder="e.g. Session #42">
+    </div>
+    <div class="field">
+      <label>DESCRIPTION (optional)</label>
+      <input type="text" id="new-desc" placeholder="Brief description of this session">
+    </div>
+    <div class="field">
+      <label>TWEET URLS *</label>
+      <textarea id="new-tweets" placeholder="Paste tweet URLs, one per line:&#10;https://x.com/user/status/123456&#10;https://x.com/user/status/789012&#10;..."></textarea>
+      <div class="url-count" id="url-count">0 valid URLs detected</div>
+    </div>
+    <div class="msg msg-error" id="create-error"></div>
+    <div style="display:flex;gap:8px;margin-top:4px;">
+      <button class="btn btn-ghost btn-full" onclick="closeCreateModal()">CANCEL</button>
+      <button class="btn btn-primary btn-full" id="create-btn" onclick="createSession()">CREATE SESSION</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════
+     EDIT SESSION MODAL
+══════════════════════════════════════════ -->
+<div class="modal-overlay" id="edit-modal">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">Edit Session</div>
+      <button class="modal-close" onclick="closeEditModal()">×</button>
+    </div>
+    <input type="hidden" id="edit-session-id">
+    <div class="field">
+      <label>SESSION TITLE</label>
+      <input type="text" id="edit-title">
+    </div>
+    <div class="field">
+      <label>DESCRIPTION</label>
+      <input type="text" id="edit-desc">
+    </div>
+    <div class="msg msg-error" id="edit-error"></div>
+    <div style="display:flex;gap:8px;margin-top:4px;">
+      <button class="btn btn-ghost btn-full" onclick="closeEditModal()">CANCEL</button>
+      <button class="btn btn-primary btn-full" id="edit-btn" onclick="saveEdit()">SAVE CHANGES</button>
+    </div>
+  </div>
+</div>
+
+<footer>SESSION PROOF CHECKER &nbsp;·&nbsp; ADMIN PANEL &nbsp;·&nbsp; SECURED VIA SUPABASE AUTH</footer>
+
+<script>
+// ============================================================
+// CONFIG — same as index.html
+// ============================================================
+const SUPABASE_URL  = 'https://mcfmqlnraczhlduoxiek.supabase.co/rest/v1/';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1jZm1xbG5yYWN6aGxkdW94aWVrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk1MDg2OTEsImV4cCI6MjA5NTA4NDY5MX0.ixYx0k5eapbUYJxRhADgQV1mhcMS9Xuu7MmG9Syx3UU';
+const CORS_PROXY = 'https://api.allorigins.win/get?url=';
+
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+let currentUser = null;
+let allSessions = [];
+let activeSessionId = null;
+
+// ============================================================
+// AUTH INIT
+// ============================================================
+document.addEventListener('DOMContentLoaded', async () => {
+  const { data: { session } } = await sb.auth.getSession();
+  if (session?.user) {
+    currentUser = session.user;
+    showAdminPage();
+  }
+
+  // Listen for enter key on login form
+  ['login-email','login-password'].forEach(id => {
+    document.getElementById(id).addEventListener('keydown', e => {
+      if (e.key === 'Enter') doLogin();
+    });
+  });
+
+  // URL count live update
+  document.getElementById('new-tweets').addEventListener('input', updateUrlCount);
+});
+
+// ============================================================
+// LOGIN / LOGOUT
+// ============================================================
+async function doLogin() {
+  const email = document.getElementById('login-email').value.trim();
+  const password = document.getElementById('login-password').value;
+  const errEl = document.getElementById('login-error');
+  errEl.className = 'msg';
+
+  if (!email || !password) { showMsg(errEl, 'error', 'Email and password are required.'); return; }
+
+  const btn = document.getElementById('login-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> Signing in...';
+
+  const { data, error } = await sb.auth.signInWithPassword({ email, password });
+
+  if (error) {
+    showMsg(errEl, 'error', error.message || 'Invalid credentials.');
+    btn.disabled = false;
+    btn.innerHTML = 'SIGN IN';
+    return;
+  }
+
+  currentUser = data.user;
+  showAdminPage();
+}
+
+async function logout() {
+  await sb.auth.signOut();
+  currentUser = null;
+  document.getElementById('admin-page').style.display = 'none';
+  document.getElementById('login-page').style.display = 'flex';
+  document.getElementById('logout-btn').style.display = 'none';
+  document.getElementById('admin-badge').style.display = 'none';
+  document.getElementById('login-email').value = '';
+  document.getElementById('login-password').value = '';
+}
+
+function showAdminPage() {
+  document.getElementById('login-page').style.display = 'none';
+  document.getElementById('admin-page').style.display = 'block';
+  document.getElementById('logout-btn').style.display = 'flex';
+  document.getElementById('admin-badge').style.display = 'inline-flex';
+  loadSessions();
+}
+
+// ============================================================
+// TABS
+// ============================================================
+function switchTab(name) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('tab-' + name).classList.add('active');
+}
+
+// ============================================================
+// LOAD SESSIONS
+// ============================================================
+async function loadSessions() {
+  const listEl = document.getElementById('sessions-list');
+  listEl.innerHTML = `
+    <div style="padding:10px 0;">
+      <div class="skel" style="height:90px;border-radius:14px;margin-bottom:10px;"></div>
+      <div class="skel" style="height:90px;border-radius:14px;"></div>
+    </div>`;
+
+  const { data: sessions } = await sb
+    .from('sessions')
+    .select('*')
+    .order('created_at', { ascending: false });
+
+  allSessions = sessions || [];
+
+  // Get tweet counts and participant counts
+  const enriched = await Promise.all(allSessions.map(async s => {
+    const [{ count: tweetCount }, { count: partCount }] = await Promise.all([
+      sb.from('session_tweets').select('*', { count: 'exact', head: true }).eq('session_id', s.id),
+      sb.from('check_results').select('*', { count: 'exact', head: true }).eq('session_id', s.id)
+    ]);
+    return { ...s, tweet_count: tweetCount || 0, participant_count: partCount || 0 };
+  }));
+
+  const active = enriched.filter(s => s.is_active);
+  activeSessionId = active[0]?.id || null;
+
+  document.getElementById('sessions-sub').textContent =
+    `${enriched.length} total · ${active.length} active`;
+
+  if (enriched.length === 0) {
+    listEl.innerHTML = `<div class="empty"><div class="eicon">📭</div>No sessions yet. Create your first one.</div>`;
+    return;
+  }
+
+  listEl.innerHTML = enriched.map((s, i) => `
+    <div class="session-item ${s.is_active ? 'is-active' : ''}" style="animation-delay:${i*0.05}s">
+      <div class="session-item-top">
+        <div class="session-item-meta">
+          <div class="session-item-title">
+            ${s.is_active ? '<span class="live-dot"></span>' : ''}
+            ${escHtml(s.title)}
+          </div>
+          ${s.description ? `<div class="session-item-desc">${escHtml(s.description)}</div>` : ''}
+          <div class="session-item-stats">
+            <div class="sstat"><span>${s.tweet_count}</span> TWEETS</div>
+            <div class="sstat"><span>${s.participant_count}</span> CHECKED</div>
+            <div class="sstat">${fmtDate(s.created_at)}</div>
+          </div>
+        </div>
+        <div class="session-item-actions">
+          ${s.is_active
+            ? `<button class="btn btn-warn btn-sm" onclick="toggleActive('${s.id}', false)">DEACTIVATE</button>`
+            : `<button class="btn btn-success btn-sm" onclick="toggleActive('${s.id}', true)">ACTIVATE</button>`
+          }
+          <button class="btn btn-ghost btn-sm" onclick="openEditModal('${s.id}')">EDIT</button>
+          <button class="btn btn-danger btn-sm" onclick="deleteSession('${s.id}')">DELETE</button>
+        </div>
+      </div>
+    </div>
+  `).join('');
+}
+
+// ============================================================
+// TOGGLE ACTIVE
+// ============================================================
+async function toggleActive(id, makeActive) {
+  if (makeActive) {
+    // Deactivate all others first
+    await sb.from('sessions').update({ is_active: false }).neq('id', id);
+  }
+  await sb.from('sessions').update({ is_active: makeActive }).eq('id', id);
+  const msg = document.getElementById('sessions-msg');
+  showMsg(msg, 'success', makeActive ? '✓ Session activated.' : '✓ Session deactivated.');
+  setTimeout(() => msg.className = 'msg', 3000);
+  loadSessions();
+}
+
+// ============================================================
+// DELETE SESSION
+// ============================================================
+async function deleteSession(id) {
+  if (!confirm('Delete this session and all its results? This cannot be undone.')) return;
+  await sb.from('sessions').delete().eq('id', id);
+  const msg = document.getElementById('sessions-msg');
+  showMsg(msg, 'success', '✓ Session deleted.');
+  setTimeout(() => msg.className = 'msg', 3000);
+  loadSessions();
+}
+
+// ============================================================
+// CREATE SESSION MODAL
+// ============================================================
+function openCreateModal() {
+  document.getElementById('new-title').value = '';
+  document.getElementById('new-desc').value = '';
+  document.getElementById('new-tweets').value = '';
+  document.getElementById('url-count').textContent = '0 valid URLs detected';
+  document.getElementById('create-error').className = 'msg';
+  document.getElementById('create-modal').classList.add('show');
+  setTimeout(() => document.getElementById('new-title').focus(), 100);
+}
+
+function closeCreateModal() {
+  document.getElementById('create-modal').classList.remove('show');
+}
+
+function updateUrlCount() {
+  const urls = parseUrls(document.getElementById('new-tweets').value);
+  document.getElementById('url-count').textContent = `${urls.length} valid URL${urls.length !== 1 ? 's' : ''} detected`;
+}
+
+async function createSession() {
+  const title = document.getElementById('new-title').value.trim();
+  const desc = document.getElementById('new-desc').value.trim();
+  const rawUrls = document.getElementById('new-tweets').value;
+  const errEl = document.getElementById('create-error');
+  errEl.className = 'msg';
+
+  if (!title) { showMsg(errEl, 'error', 'Session title is required.'); return; }
+  const urls = parseUrls(rawUrls);
+  if (urls.length === 0) { showMsg(errEl, 'error', 'No valid tweet URLs found. Paste full x.com/twitter.com URLs.'); return; }
+
+  const btn = document.getElementById('create-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> Creating...';
+
+  const { data: session, error: sErr } = await sb
+    .from('sessions')
+    .insert({ title, description: desc || null, is_active: false })
+    .select().single();
+
+  if (sErr) { showMsg(errEl, 'error', sErr.message); btn.disabled=false; btn.innerHTML='CREATE SESSION'; return; }
+
+  const rows = urls.map((url, i) => ({
+    session_id: session.id,
+    tweet_url: url,
+    tweet_id: extractId(url),
+    position: i + 1
+  }));
+
+  const { error: tErr } = await sb.from('session_tweets').insert(rows);
+  if (tErr) { showMsg(errEl, 'error', tErr.message); btn.disabled=false; btn.innerHTML='CREATE SESSION'; return; }
+
+  btn.disabled = false;
+  btn.innerHTML = 'CREATE SESSION';
+  closeCreateModal();
+  const msg = document.getElementById('sessions-msg');
+  showMsg(msg, 'success', `✓ Session "${title}" created with ${urls.length} tweets.`);
+  setTimeout(() => msg.className = 'msg', 4000);
+  loadSessions();
+}
+
+// ============================================================
+// EDIT SESSION MODAL
+// ============================================================
+function openEditModal(id) {
+  const s = allSessions.find(x => x.id === id);
+  if (!s) return;
+  document.getElementById('edit-session-id').value = id;
+  document.getElementById('edit-title').value = s.title;
+  document.getElementById('edit-desc').value = s.description || '';
+  document.getElementById('edit-error').className = 'msg';
+  document.getElementById('edit-modal').classList.add('show');
+}
+
+function closeEditModal() {
+  document.getElementById('edit-modal').classList.remove('show');
+}
+
+async function saveEdit() {
+  const id = document.getElementById('edit-session-id').value;
+  const title = document.getElementById('edit-title').value.trim();
+  const desc = document.getElementById('edit-desc').value.trim();
+  const errEl = document.getElementById('edit-error');
+  errEl.className = 'msg';
+
+  if (!title) { showMsg(errEl, 'error', 'Title cannot be empty.'); return; }
+
+  const btn = document.getElementById('edit-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div> Saving...';
+
+  const { error } = await sb.from('sessions').update({ title, description: desc || null }).eq('id', id);
+
+  btn.disabled = false;
+  btn.innerHTML = 'SAVE CHANGES';
+
+  if (error) { showMsg(errEl, 'error', error.message); return; }
+  closeEditModal();
+  const msg = document.getElementById('sessions-msg');
+  showMsg(msg, 'success', '✓ Session updated.');
+  setTimeout(() => msg.className = 'msg', 3000);
+  loadSessions();
+}
+
+// ============================================================
+// ADMIN CHECK USER
+// ============================================================
+async function adminCheck() {
+  const rawUsername = document.getElementById('admin-username').value.trim();
+  const username = rawUsername.replace(/^@/, '').toLowerCase();
+  const errEl = document.getElementById('admin-check-error');
+  errEl.className = 'msg';
+
+  if (!username) { showMsg(errEl, 'error', 'Enter a username.'); return; }
+  if (!/^[a-zA-Z0-9_]{1,15}$/.test(username)) { showMsg(errEl, 'error', 'Invalid username format.'); return; }
+
+  // Get active session
+  const { data: sessions } = await sb.from('sessions').select('*').eq('is_active', true).limit(1);
+  if (!sessions || sessions.length === 0) { showMsg(errEl, 'error', 'No active session.'); return; }
+  const session = sessions[0];
+
+  const { data: tweets } = await sb.from('session_tweets').select('*').eq('session_id', session.id).order('position');
+  if (!tweets || tweets.length === 0) { showMsg(errEl, 'error', 'Active session has no tweets.'); return; }
+
+  const btn = document.getElementById('admin-check-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner"></div>';
+  document.getElementById('admin-result-wrap').style.display = 'none';
+
+  // Scrape
+  let repliedIds = new Set();
+  try {
+    const url = `https://x.com/${username}/with_replies`;
+    const resp = await fetch(CORS_PROXY + encodeURIComponent(url), { signal: AbortSignal.timeout(25000) });
+    const json = await resp.json();
+    const html = json.contents || '';
+
+    const m1 = [...html.matchAll(/\/status\/(\d{10,20})/g)];
+    m1.forEach(m => repliedIds.add(m[1]));
+    const m2 = [...html.matchAll(/"in_reply_to_status_id_str"\s*:\s*"(\d+)"/g)];
+    m2.forEach(m => repliedIds.add(m[1]));
+  } catch {}
+
+  const tweetResults = tweets.map(t => ({
+    tweetId: t.tweet_id, tweetUrl: t.tweet_url, position: t.position,
+    completed: repliedIds.has(t.tweet_id)
+  }));
+
+  const completedCount = tweetResults.filter(r => r.completed).length;
+  const totalCount = tweets.length;
+  const completionRate = totalCount > 0 ? Math.round((completedCount / totalCount) * 1000) / 10 : 0;
+  const status = getStatus(completionRate);
+
+  // Save/upsert result
+  await sb.from('check_results').upsert({
+    session_id: session.id, username,
+    completed_count: completedCount, total_count: totalCount,
+    completion_rate: completionRate, tweet_results: tweetResults
+  }, { onConflict: 'session_id,username' });
+
+  btn.disabled = false;
+  btn.innerHTML = 'CHECK';
+
+  // Render result
+  const statusMap = {
+    TOP_PARTICIPANT: { label: '🏆 TOP PARTICIPANT', color: 'var(--cyan)' },
+    COMPLETED: { label: '✓ COMPLETED', color: 'var(--green)' },
+    VERIFIED: { label: '◉ VERIFIED', color: 'var(--orange)' },
+    INCOMPLETE: { label: '✗ INCOMPLETE', color: 'var(--red)' }
+  };
+  const sc = statusMap[status];
+
+  const wrap = document.getElementById('admin-result-wrap');
+  wrap.style.display = 'block';
+  wrap.innerHTML = `
+    <div class="admin-result-card">
+      <div class="arc-header">
+        <img class="arc-pfp" src="https://unavatar.io/twitter/${username}"
+          onerror="this.src='https://ui-avatars.com/api/?name=${username}&background=1d1d28&color=63b3ed&size=80&bold=true'" alt="">
+        <div>
+          <div class="arc-username">@${escHtml(username)}</div>
+          <div class="arc-session">${escHtml(session.title)}</div>
+          <div style="font-family:var(--font-mono);font-size:11px;font-weight:600;color:${sc.color};margin-top:4px;">${sc.label}</div>
+        </div>
+      </div>
+      <div class="arc-stats">
+        <div class="arc-stat"><span class="v" style="color:var(--cyan)">${completedCount}</span> REPLIED</div>
+        <div class="arc-stat"><span class="v" style="color:var(--text-muted)">${totalCount}</span> TOTAL</div>
+        <div class="arc-stat"><span class="v" style="color:var(--red)">${totalCount - completedCount}</span> MISSING</div>
+        <div class="arc-stat"><span class="v" style="color:var(--cyan)">${completionRate}%</span> RATE</div>
+      </div>
+      <div class="pbar-wrap">
+        <div class="pbar-top"><span>COMPLETION</span><span style="color:var(--cyan)">${completionRate}%</span></div>
+        <div class="pbar-bg"><div class="pbar-fill" id="admin-pbar" style="width:0%"></div></div>
+      </div>
+      <div class="mini-table">
+        <div class="mini-table-head"><span>#</span><span>TWEET</span><span style="text-align:right">STATUS</span></div>
+        ${tweetResults.map(t => `
+          <div class="mini-row ${t.completed ? '' : 'miss'}">
+            <span style="font-family:var(--font-mono);font-size:10px;color:var(--text-dim)">#${t.position}</span>
+            <a class="turl" href="${t.tweetUrl}" target="_blank" rel="noopener">${t.tweetUrl.replace('https://x.com/','').replace('https://twitter.com/','')}</a>
+            <span class="ts ${t.completed ? 'done' : 'miss'}">${t.completed ? '✓ Done' : '✗ Miss'}</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+  setTimeout(() => {
+    const bar = document.getElementById('admin-pbar');
+    if (bar) bar.style.width = completionRate + '%';
+  }, 100);
+
+  wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// ============================================================
+// HELPERS
+// ============================================================
+function getStatus(rate) {
+  if (rate >= 95) return 'TOP_PARTICIPANT';
+  if (rate >= 80) return 'COMPLETED';
+  if (rate >= 50) return 'VERIFIED';
+  return 'INCOMPLETE';
+}
+
+function parseUrls(raw) {
+  return [...new Set(
+    raw.split(/[\n,;\s]+/)
+      .map(s => s.trim())
+      .filter(s => /x\.com.*\/status\/|twitter\.com.*\/status\//.test(s))
+      .map(s => s.replace('twitter.com', 'x.com').split('?')[0])
+  )];
+}
+
+function extractId(url) {
+  const m = url.match(/\/status\/(\d+)/);
+  return m ? m[1] : url;
+}
+
+function escHtml(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function fmtDate(d) {
+  return new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function showMsg(el, type, text) {
+  el.textContent = text;
+  el.className = `msg msg-${type} show`;
+}
+
+// Close modals on overlay click
+document.getElementById('create-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeCreateModal();
+});
+document.getElementById('edit-modal').addEventListener('click', e => {
+  if (e.target === e.currentTarget) closeEditModal();
+});
+</script>
+</body>
+</html>
