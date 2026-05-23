@@ -743,7 +743,7 @@
       <a id="ext-download-btn" href="#" class="btn btn-primary" style="text-decoration:none;font-size:11px;" download>
         ⬇ Download Extension
       </a>
-      <a href="#" class="btn btn-ghost" style="text-decoration:none;font-size:11px;" onclick="document.getElementById('ext-banner').style.display='none';return false;">
+      <a href="#" class="btn btn-ghost" style="text-decoration:none;font-size:11px;" onclick="sessionStorage.setItem('ext-banner-dismissed','1');document.getElementById('ext-banner').style.display='none';return false;">
         Dismiss
       </a>
     </div>
@@ -831,8 +831,6 @@
 // ============================================================
 const SUPABASE_URL = 'https://mcfmqlnraczhlduoxiek.supabase.co';
 const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1jZm1xbG5yYWN6aGxkdW94aWVrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk1MDg2OTEsImV4cCI6MjA5NTA4NDY5MX0.ixYx0k5eapbUYJxRhADgQV1mhcMS9Xuu7MmG9Syx3UU';
-const CORS_PROXY = 'https://api.allorigins.win/get?url=';
-
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ============================================================
@@ -850,10 +848,9 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('username-input').addEventListener('keydown', e => {
     if (e.key === 'Enter') checkResult();
   });
-  // Show extension banner if neither extension nor Railway is set up
-  if (!EXTENSION_ID && !RAILWAY_URL) {
-    document.getElementById('ext-banner').style.display = 'block';
-  }
+  // Show extension banner until user dismisses it
+  const dismissed = sessionStorage.getItem('ext-banner-dismissed');
+  if (!dismissed) document.getElementById('ext-banner').style.display = 'block';
 });
 
 // ============================================================
@@ -898,132 +895,35 @@ async function loadSession() {
 }
 
 // ============================================================
-// CONFIG — Set your Railway backend URL after deploying
+// CONFIG
 // ============================================================
-// Replace with your Railway URL e.g. 'https://session-proof-scraper.up.railway.app'
-// Leave empty string '' to skip Railway and rely on extension only
-const RAILWAY_URL = '';
-
-// Your Chrome Extension ID after publishing/installing
-// Found in chrome://extensions after loading unpacked
-// e.g. 'abcdefghijklmnopqrstuvwxyz123456'
-const EXTENSION_ID = 'encilfbemkfgiflhgokkkogihemgjpej';
+// Paste your Extension ID here after loading it in Chrome.
+// Found at chrome://extensions once you load the unpacked folder.
+const EXTENSION_ID = 'mbgpjomombnciaeklkbomjjdegdhoncc';
 
 // ============================================================
-// SCRAPE ENGINE — 3-tier: Extension → Railway → CORS proxies
+// SCRAPE ENGINE — Extension only (uses user's real X session)
 // ============================================================
 
-// Check if extension is installed and responding
-async function isExtensionAvailable() {
-  if (!EXTENSION_ID || !window.chrome || !chrome.runtime) return false;
-  return new Promise(resolve => {
-    try {
-      chrome.runtime.sendMessage(EXTENSION_ID, { type: 'PING' }, resp => {
-        resolve(!chrome.runtime.lastError && resp && resp.ok);
-      });
-      setTimeout(() => resolve(false), 1500);
-    } catch { resolve(false); }
-  });
-}
+async function scrapeReplies(username) {
+  // Check extension is present
+  if (!window.chrome || !chrome.runtime) {
+    throw new Error('no_extension');
+  }
 
-// Tier 1: Chrome Extension (uses user's real logged-in X session)
-async function scrapeViaExtension(username) {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(
       EXTENSION_ID,
       { type: 'SCRAPE_REPLIES', username },
       response => {
-        if (chrome.runtime.lastError || !response) return reject(new Error('Extension error'));
+        if (chrome.runtime.lastError) return reject(new Error('no_extension'));
+        if (!response) return reject(new Error('no_extension'));
         if (response.error) return reject(new Error(response.error));
         resolve(new Set(response.ids || []));
       }
     );
-    // Timeout after 35s (tab open + scroll takes time)
-    setTimeout(() => reject(new Error('Extension timeout')), 35000);
+    setTimeout(() => reject(new Error('Extension timed out — make sure you are logged into X')), 40000);
   });
-}
-
-// Tier 2: Railway Puppeteer backend
-async function scrapeViaRailway(username) {
-  if (!RAILWAY_URL) throw new Error('No Railway URL configured');
-  const resp = await fetch(`${RAILWAY_URL}/scrape?username=${encodeURIComponent(username)}`, {
-    signal: AbortSignal.timeout(40000)
-  });
-  if (!resp.ok) throw new Error(`Railway error ${resp.status}`);
-  const data = await resp.json();
-  if (data.error) throw new Error(data.error);
-  return new Set(data.ids || []);
-}
-
-// Tier 3: CORS proxy fallback (best-effort, often returns empty due to X blocking)
-const PROXY_LIST = [
-  url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
-  url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-  url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
-];
-
-async function fetchViaProxy(targetUrl) {
-  for (const makeProxy of PROXY_LIST) {
-    try {
-      const resp = await fetch(makeProxy(targetUrl), { signal: AbortSignal.timeout(15000) });
-      if (!resp.ok) continue;
-      const text = await resp.text();
-      let html = text;
-      try { const j = JSON.parse(text); if (j.contents) html = j.contents; } catch {}
-      if (html && html.length > 800) return html;
-    } catch { continue; }
-  }
-  return '';
-}
-
-function extractIdsFromHtml(html) {
-  const ids = new Set();
-  if (!html) return ids;
-  [
-    /"in_reply_to_status_id_str"\s*:\s*"(\d{10,20})"/g,
-    /"in_reply_to_status_id"\s*:\s*(\d{10,20})/g,
-    /\/status\/(\d{10,20})/g,
-    /"conversation_id_str"\s*:\s*"(\d{10,20})"/g,
-  ].forEach(re => [...html.matchAll(re)].forEach(m => ids.add(m[1])));
-  return ids;
-}
-
-async function scrapeViaProxy(username) {
-  const ids = new Set();
-  const html1 = await fetchViaProxy(`https://x.com/${username}/with_replies`);
-  extractIdsFromHtml(html1).forEach(id => ids.add(id));
-  const html2 = await fetchViaProxy(`https://x.com/${username}`);
-  extractIdsFromHtml(html2).forEach(id => ids.add(id));
-  return ids;
-}
-
-// Main orchestrator — tries each tier in order
-async function scrapeReplies(username, onStatus) {
-  // Tier 1: Extension
-  if (EXTENSION_ID) {
-    try {
-      const extAvailable = await isExtensionAvailable();
-      if (extAvailable) {
-        onStatus && onStatus('extension');
-        const ids = await scrapeViaExtension(username);
-        if (ids.size > 0) return { ids, source: 'extension' };
-      }
-    } catch {}
-  }
-
-  // Tier 2: Railway
-  if (RAILWAY_URL) {
-    try {
-      onStatus && onStatus('railway');
-      const ids = await scrapeViaRailway(username);
-      if (ids.size > 0) return { ids, source: 'railway' };
-    } catch {}
-  }
-
-  // Tier 3: CORS proxy (best effort)
-  onStatus && onStatus('proxy');
-  const ids = await scrapeViaProxy(username);
-  return { ids, source: 'proxy' };
 }
 
 // ============================================================
@@ -1050,29 +950,22 @@ async function checkResult() {
 
   try {
     await showStep(1, 400);
+    await showStep(2, 400);
 
-    let repliedIds = new Set();
-    let scrapeSource = 'proxy';
+    let repliedIds;
     try {
-      const result = await scrapeReplies(username, (src) => {
-        scrapeSource = src;
-        const labels = {
-          extension: '🔌 Using browser extension...',
-          railway: '🚂 Using Railway backend...',
-          proxy: '🌐 Using public proxy (best effort)...'
-        };
-        const el = document.getElementById('step-2');
-        if (el) el.querySelector('.step-icon').textContent = src === 'extension' ? '🔌' : src === 'railway' ? '🚂' : '🌐';
-      });
-      repliedIds = result.ids;
-      scrapeSource = result.source;
+      repliedIds = await scrapeReplies(username);
     } catch (e) {
-      repliedIds = new Set();
+      if (e.message === 'no_extension') {
+        showError(errEl, 'Extension not detected. Install the Session Proof extension and make sure you are logged into X.');
+        return;
+      }
+      showError(errEl, e.message || 'Failed to scan replies. Try again.');
+      return;
     }
 
-    await showStep(2, 300);
     await showStep(3, 400);
-    await showStep(4, 600);
+    await showStep(4, 500);
 
     // Match against session tweets
     const tweetResults = sessionTweets.map(st => ({
