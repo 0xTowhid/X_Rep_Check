@@ -721,8 +721,8 @@
     </div>
     <div class="msg msg-error" id="check-error"></div>
     <div class="steps" id="steps-wrap" style="display:none;">
-      <div class="step-item" id="step-1"><span class="step-icon">🔍</span> Opening your reply page...</div>
-      <div class="step-item" id="step-2"><span class="step-icon">📜</span> Scrolling through replies...</div>
+      <div class="step-item" id="step-1"><span class="step-icon">🔍</span> Connecting to reply sources...</div>
+      <div class="step-item" id="step-2"><span class="step-icon">📜</span> Scanning your public replies...</div>
       <div class="step-item" id="step-3"><span class="step-icon">🔗</span> Extracting parent tweet IDs...</div>
       <div class="step-item" id="step-4"><span class="step-icon">✅</span> Comparing with session tasks...</div>
       <div class="step-item" id="step-5"><span class="step-icon">🎯</span> Building your report...</div>
@@ -874,88 +874,108 @@ async function loadSession() {
 }
 
 // ============================================================
-// SCRAPE X REPLIES via CORS proxy — tries multiple proxies
+// SCRAPE X REPLIES — multi-source, CORS-proxy approach
 // ============================================================
 
-// Multiple free CORS proxies — tried in order until one works
-const PROXY_LIST = [
+// X.com itself returns a JS-only shell via CORS proxies (no tweet data).
+// We instead query active Nitter instances (open-source Twitter frontends)
+// which render full HTML including replies, plus supplemental sources.
+
+// Active public Nitter instances (updated list — try in order)
+const NITTER_INSTANCES = [
+  'https://nitter.privacydev.net',
+  'https://nitter.poast.org',
+  'https://nitter.lucahammer.com',
+  'https://nitter.1d4.us',
+  'https://nitter.kavin.rocks',
+  'https://lightbrd.com',
+];
+
+// CORS proxy wrappers
+const CORS_PROXIES = [
   url => `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`,
   url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
   url => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`,
 ];
 
-async function fetchViaProxy(targetUrl) {
-  for (const makeProxy of PROXY_LIST) {
+async function fetchViaProxy(targetUrl, timeoutMs = 15000) {
+  for (const makeProxy of CORS_PROXIES) {
     try {
       const proxied = makeProxy(targetUrl);
-      const resp = await fetch(proxied, { signal: AbortSignal.timeout(20000) });
+      const resp = await fetch(proxied, { signal: AbortSignal.timeout(timeoutMs) });
       if (!resp.ok) continue;
-      // allorigins wraps in {contents:...}, codetabs returns raw text
       const text = await resp.text();
       let html = text;
-      try {
-        const json = JSON.parse(text);
-        if (json.contents) html = json.contents;
-      } catch {}
-      if (html && html.length > 500) return html;
+      try { const j = JSON.parse(text); if (j.contents) html = j.contents; } catch {}
+      if (html && html.length > 800) return html;
     } catch { continue; }
   }
   return '';
 }
 
+// Extract all tweet/status IDs that appear in HTML
 function extractIdsFromHtml(html) {
   const ids = new Set();
   if (!html) return ids;
 
-  // Method 1: in_reply_to_status_id_str in embedded JSON — most reliable
-  const m1 = [...html.matchAll(/"in_reply_to_status_id_str"\s*:\s*"(\d{10,20})"/g)];
-  m1.forEach(m => ids.add(m[1]));
+  // All /status/ID patterns (catches reply-to links, tweet links, etc.)
+  const all = [...html.matchAll(/\/status\/(\d{10,20})/g)];
+  all.forEach(m => ids.add(m[1]));
 
-  // Method 2: in_reply_to_status_id (numeric, no quotes) — older format
-  const m2 = [...html.matchAll(/"in_reply_to_status_id"\s*:\s*(\d{10,20})/g)];
-  m2.forEach(m => ids.add(m[1]));
+  // in_reply_to_status_id_str in embedded JSON
+  const j1 = [...html.matchAll(/"in_reply_to_status_id_str"\s*:\s*"(\d{10,20})"/g)];
+  j1.forEach(m => ids.add(m[1]));
 
-  // Method 3: conversation_id patterns near reply markers
-  const m3 = [...html.matchAll(/"conversation_id_str"\s*:\s*"(\d{10,20})"/g)];
-  m3.forEach(m => ids.add(m[1]));
+  // in_reply_to_status_id numeric
+  const j2 = [...html.matchAll(/"in_reply_to_status_id"\s*:\s*(\d{10,20})/g)];
+  j2.forEach(m => ids.add(m[1]));
 
-  // Method 4: all /status/ID occurrences (broad net — catches parent tweet links)
-  const m4 = [...html.matchAll(/\/status\/(\d{10,20})/g)];
-  m4.forEach(m => ids.add(m[1]));
+  return ids;
+}
 
-  // Method 5: tweet_results permalink patterns
-  const m5 = [...html.matchAll(/"permalink"\s*:\s*"[^"]*\/status\/(\d{10,20})"/g)];
-  m5.forEach(m => ids.add(m[1]));
+// Try fetching a Nitter instance's /with_replies page for the user
+async function fetchNitterReplies(username) {
+  const ids = new Set();
+  // Try each instance; return as soon as we get useful data
+  for (const instance of NITTER_INSTANCES) {
+    try {
+      const url = `${instance}/${username}/with_replies`;
+      const html = await fetchViaProxy(url, 18000);
+      if (!html || html.length < 800) continue;
 
+      // Check this is actually a Nitter page (not a 404/error page)
+      if (!html.includes('timeline-item') && !html.includes('tweet-link') &&
+          !html.includes('/status/')) continue;
+
+      extractIdsFromHtml(html).forEach(id => ids.add(id));
+
+      // Also grab the plain profile page from same instance for more coverage
+      try {
+        const html2 = await fetchViaProxy(`${instance}/${username}`, 12000);
+        extractIdsFromHtml(html2).forEach(id => ids.add(id));
+      } catch {}
+
+      if (ids.size > 0) return ids; // got real data — stop trying
+    } catch { continue; }
+  }
   return ids;
 }
 
 async function scrapeReplies(username) {
   const repliedIds = new Set();
 
-  // Try fetching /with_replies page
-  const withRepliesUrl = `https://x.com/${username}/with_replies`;
-  const html1 = await fetchViaProxy(withRepliesUrl);
-  extractIdsFromHtml(html1).forEach(id => repliedIds.add(id));
+  // Primary: Nitter instances (most reliable for public reply data)
+  const nitterIds = await fetchNitterReplies(username);
+  nitterIds.forEach(id => repliedIds.add(id));
 
-  // Also try the plain profile page — sometimes has more data
-  const profileUrl = `https://x.com/${username}`;
-  const html2 = await fetchViaProxy(profileUrl);
-  extractIdsFromHtml(html2).forEach(id => repliedIds.add(id));
+  // Secondary: try x.com / twitter.com via proxy (usually returns shell, but worth trying)
+  if (repliedIds.size === 0) {
+    const html1 = await fetchViaProxy(`https://x.com/${username}/with_replies`, 20000);
+    extractIdsFromHtml(html1).forEach(id => repliedIds.add(id));
 
-  // Also try nitter.net as a fallback (often has cleaner reply data)
-  try {
-    const nitterUrl = `https://nitter.net/${username}/with_replies`;
-    const html3 = await fetchViaProxy(nitterUrl);
-    if (html3) {
-      // Nitter uses tweet-link class with /status/ hrefs
-      const m = [...html3.matchAll(/href="[^"]*\/status\/(\d{10,20})"/g)];
-      m.forEach(mm => repliedIds.add(mm[1]));
-      // Also grab tweet-content reply-to links
-      const m2 = [...html3.matchAll(/\/status\/(\d{10,20})/g)];
-      m2.forEach(mm => repliedIds.add(mm[1]));
-    }
-  } catch {}
+    const html2 = await fetchViaProxy(`https://twitter.com/${username}/with_replies`, 20000);
+    extractIdsFromHtml(html2).forEach(id => repliedIds.add(id));
+  }
 
   return repliedIds;
 }
@@ -1107,31 +1127,57 @@ async function fetchProfilePic(username) {
 }
 
 // Fetch profile pic as a data URL safe for canvas drawing
-// Canvas blocks cross-origin images — we proxy through allorigins
+// Strategy: use ui-avatars (always works) as primary, try to proxy unavatar as bonus
 async function fetchProfilePicForCanvas(username) {
-  const sources = [
+  // Try unavatar proxied through allorigins/raw (returns raw bytes, not JSON wrapper)
+  const unavatarSources = [
     `https://unavatar.io/twitter/${username}`,
     `https://unavatar.io/x/${username}`,
-    `https://api.dicebear.com/7.x/initials/svg?seed=${username}`,
   ];
 
-  for (const src of sources) {
-    try {
-      // Proxy through allorigins to avoid CORS canvas taint
-      const proxied = `https://api.allorigins.win/raw?url=${encodeURIComponent(src)}`;
-      const resp = await fetch(proxied, { signal: AbortSignal.timeout(8000) });
-      if (!resp.ok) continue;
+  for (const src of unavatarSources) {
+    for (const makeProxy of CORS_PROXIES) {
+      try {
+        // Use /raw endpoint on allorigins (returns raw file, not JSON)
+        let proxied = makeProxy(src);
+        // For allorigins specifically, use /raw instead of /get to avoid JSON wrapping
+        if (proxied.includes('allorigins.win/get')) {
+          proxied = `https://api.allorigins.win/raw?url=${encodeURIComponent(src)}`;
+        }
+        const resp = await fetch(proxied, { signal: AbortSignal.timeout(8000) });
+        if (!resp.ok) continue;
+        const blob = await resp.blob();
+        if (!blob || blob.size < 500) continue; // skip empty/broken responses
+        const dataUrl = await new Promise((res, rej) => {
+          const reader = new FileReader();
+          reader.onload = () => res(reader.result);
+          reader.onerror = rej;
+          reader.readAsDataURL(blob);
+        });
+        // Validate it's actually an image (not an HTML error page)
+        if (dataUrl && (dataUrl.startsWith('data:image/') || dataUrl.startsWith('data:application/octet'))) {
+          return dataUrl;
+        }
+      } catch { continue; }
+    }
+  }
+
+  // Reliable fallback: ui-avatars.com has permissive CORS and no redirects
+  try {
+    const uiUrl = `https://ui-avatars.com/api/?name=${encodeURIComponent(username)}&background=16161f&color=63b3ed&size=128&bold=true&format=png`;
+    const resp = await fetch(uiUrl, { signal: AbortSignal.timeout(8000) });
+    if (resp.ok) {
       const blob = await resp.blob();
-      // Convert to object URL / data URL for canvas
       return await new Promise((res, rej) => {
         const reader = new FileReader();
         reader.onload = () => res(reader.result);
         reader.onerror = rej;
         reader.readAsDataURL(blob);
       });
-    } catch { continue; }
-  }
-  return null; // will fall back to initials drawn on canvas
+    }
+  } catch {}
+
+  return null; // final fallback: initials drawn directly on canvas
 }
 
 // ============================================================

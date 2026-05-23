@@ -701,22 +701,31 @@ async function adminCheck() {
   btn.innerHTML = '<div class="spinner"></div>';
   document.getElementById('admin-result-wrap').style.display = 'none';
 
-  // Scrape — try multiple proxies
+  // Scrape — try multiple proxies + multiple Nitter instances
   const PROXIES = [
     u => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`,
     u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
     u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
   ];
 
-  async function adminFetchProxy(targetUrl) {
+  const NITTER_INSTANCES = [
+    'https://nitter.privacydev.net',
+    'https://nitter.poast.org',
+    'https://nitter.lucahammer.com',
+    'https://nitter.1d4.us',
+    'https://nitter.kavin.rocks',
+    'https://lightbrd.com',
+  ];
+
+  async function adminFetchProxy(targetUrl, timeoutMs = 18000) {
     for (const mkProxy of PROXIES) {
       try {
-        const r = await fetch(mkProxy(targetUrl), { signal: AbortSignal.timeout(18000) });
+        const r = await fetch(mkProxy(targetUrl), { signal: AbortSignal.timeout(timeoutMs) });
         if (!r.ok) continue;
         const t = await r.text();
         let h = t;
         try { const j = JSON.parse(t); if (j.contents) h = j.contents; } catch {}
-        if (h && h.length > 500) return h;
+        if (h && h.length > 800) return h;
       } catch { continue; }
     }
     return '';
@@ -724,6 +733,7 @@ async function adminCheck() {
 
   function extractIds(html) {
     const ids = new Set();
+    if (!html) return ids;
     [
       /"in_reply_to_status_id_str"\s*:\s*"(\d{10,20})"/g,
       /"in_reply_to_status_id"\s*:\s*(\d{10,20})/g,
@@ -735,14 +745,29 @@ async function adminCheck() {
 
   let repliedIds = new Set();
   try {
-    const h1 = await adminFetchProxy(`https://x.com/${username}/with_replies`);
-    extractIds(h1).forEach(id => repliedIds.add(id));
-    const h2 = await adminFetchProxy(`https://x.com/${username}`);
-    extractIds(h2).forEach(id => repliedIds.add(id));
-    try {
-      const h3 = await adminFetchProxy(`https://nitter.net/${username}/with_replies`);
-      if (h3) [...h3.matchAll(/\/status\/(\d{10,20})/g)].forEach(m => repliedIds.add(m[1]));
-    } catch {}
+    // Primary: try Nitter instances (they render real tweet data, unlike x.com via proxy)
+    let gotNitterData = false;
+    for (const instance of NITTER_INSTANCES) {
+      try {
+        const h = await adminFetchProxy(`${instance}/${username}/with_replies`, 18000);
+        if (!h || h.length < 800) continue;
+        if (!h.includes('timeline-item') && !h.includes('tweet-link') && !h.includes('/status/')) continue;
+        extractIds(h).forEach(id => repliedIds.add(id));
+        // Also grab plain profile from same instance
+        try {
+          const h2 = await adminFetchProxy(`${instance}/${username}`, 12000);
+          extractIds(h2).forEach(id => repliedIds.add(id));
+        } catch {}
+        if (repliedIds.size > 0) { gotNitterData = true; break; }
+      } catch { continue; }
+    }
+    // Fallback: x.com / twitter.com via proxy (usually returns JS shell, but worth trying)
+    if (!gotNitterData) {
+      const h1 = await adminFetchProxy(`https://x.com/${username}/with_replies`);
+      extractIds(h1).forEach(id => repliedIds.add(id));
+      const h2 = await adminFetchProxy(`https://twitter.com/${username}/with_replies`);
+      extractIds(h2).forEach(id => repliedIds.add(id));
+    }
   } catch {}
 
   const tweetResults = tweets.map(t => ({
