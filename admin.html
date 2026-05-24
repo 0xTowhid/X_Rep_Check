@@ -702,7 +702,7 @@ async function adminCheck() {
   document.getElementById('admin-result-wrap').style.display = 'none';
 
   // ── Scrape: Extension first, Railway fallback
-  const EXTENSION_ID = 'YOUR_EXTENSION_ID';
+  const EXTENSION_ID = 'alfpglnjnkhbgaphijciahlnefjpdhnn';
   const RAILWAY_URL   = 'YOUR_RAILWAY_URL';
 
   let repliedIds = new Set();
@@ -729,7 +729,7 @@ async function adminCheck() {
     return new Set(data.ids || []);
   }
 
-  const extAvail = window.chrome && chrome.runtime && EXTENSION_ID !== 'YOUR_EXTENSION_ID';
+  const extAvail = window.chrome && chrome.runtime && EXTENSION_ID !== 'alfpglnjnkhbgaphijciahlnefjpdhnn';
   const railAvail = RAILWAY_URL && RAILWAY_URL !== 'YOUR_RAILWAY_URL';
 
   try {

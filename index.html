@@ -900,7 +900,7 @@ async function loadSession() {
 
 // Your Chrome Extension ID
 // Found at chrome://extensions after loading the unpacked extension
-const EXTENSION_ID = 'YOUR_EXTENSION_ID';
+const EXTENSION_ID = 'alfpglnjnkhbgaphijciahlnefjpdhnn';
 
 // ============================================================
 // SCRAPE ENGINE
@@ -908,7 +908,7 @@ const EXTENSION_ID = 'YOUR_EXTENSION_ID';
 // ============================================================
 
 async function scrapeReplies(username) {
-  const extAvailable = window.chrome && chrome.runtime && EXTENSION_ID && EXTENSION_ID !== 'YOUR_EXTENSION_ID';
+  const extAvailable = window.chrome && chrome.runtime && EXTENSION_ID && EXTENSION_ID !== 'alfpglnjnkhbgaphijciahlnefjpdhnn';
   if (!extAvailable) throw new Error('no_extension');
 
   try {
