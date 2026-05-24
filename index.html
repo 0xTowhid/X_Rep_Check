@@ -457,12 +457,12 @@ function applyManualExtId() {
   });
 }
 
-
+function showExtDetected() {
   extDetected = true;
   document.getElementById('ext-not-detected').style.display = 'none';
   document.getElementById('ext-detected').style.display = 'block';
   if (activeSession) document.getElementById('check-btn').disabled = false;
-
+}
 
 function showExtNotDetected() {
   extDetected = false;
