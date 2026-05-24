@@ -701,74 +701,59 @@ async function adminCheck() {
   btn.innerHTML = '<div class="spinner"></div>';
   document.getElementById('admin-result-wrap').style.display = 'none';
 
-  // Scrape — try multiple proxies + multiple Nitter instances
-  const PROXIES = [
-    u => `https://api.allorigins.win/get?url=${encodeURIComponent(u)}`,
-    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
-    u => `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(u)}`,
-  ];
-
-  const NITTER_INSTANCES = [
-    'https://nitter.privacydev.net',
-    'https://nitter.poast.org',
-    'https://nitter.lucahammer.com',
-    'https://nitter.1d4.us',
-    'https://nitter.kavin.rocks',
-    'https://lightbrd.com',
-  ];
-
-  async function adminFetchProxy(targetUrl, timeoutMs = 18000) {
-    for (const mkProxy of PROXIES) {
-      try {
-        const r = await fetch(mkProxy(targetUrl), { signal: AbortSignal.timeout(timeoutMs) });
-        if (!r.ok) continue;
-        const t = await r.text();
-        let h = t;
-        try { const j = JSON.parse(t); if (j.contents) h = j.contents; } catch {}
-        if (h && h.length > 800) return h;
-      } catch { continue; }
-    }
-    return '';
-  }
-
-  function extractIds(html) {
-    const ids = new Set();
-    if (!html) return ids;
-    [
-      /"in_reply_to_status_id_str"\s*:\s*"(\d{10,20})"/g,
-      /"in_reply_to_status_id"\s*:\s*(\d{10,20})/g,
-      /\/status\/(\d{10,20})/g,
-      /"conversation_id_str"\s*:\s*"(\d{10,20})"/g,
-    ].forEach(re => [...html.matchAll(re)].forEach(m => ids.add(m[1])));
-    return ids;
-  }
+  // ── Scrape: Extension first, Railway fallback
+  const EXTENSION_ID = 'YOUR_EXTENSION_ID';
+  const RAILWAY_URL   = 'YOUR_RAILWAY_URL';
 
   let repliedIds = new Set();
-  try {
-    // Primary: try Nitter instances (they render real tweet data, unlike x.com via proxy)
-    let gotNitterData = false;
-    for (const instance of NITTER_INSTANCES) {
+
+  async function adminTryExtension(u) {
+    return new Promise((resolve, reject) => {
       try {
-        const h = await adminFetchProxy(`${instance}/${username}/with_replies`, 18000);
-        if (!h || h.length < 800) continue;
-        if (!h.includes('timeline-item') && !h.includes('tweet-link') && !h.includes('/status/')) continue;
-        extractIds(h).forEach(id => repliedIds.add(id));
-        // Also grab plain profile from same instance
-        try {
-          const h2 = await adminFetchProxy(`${instance}/${username}`, 12000);
-          extractIds(h2).forEach(id => repliedIds.add(id));
-        } catch {}
-        if (repliedIds.size > 0) { gotNitterData = true; break; }
-      } catch { continue; }
+        chrome.runtime.sendMessage(EXTENSION_ID, { type: 'SCRAPE_REPLIES', username: u }, resp => {
+          if (chrome.runtime.lastError || !resp) return reject(new Error('no_extension'));
+          if (resp.error) return reject(new Error(resp.error));
+          resolve(new Set(resp.ids || []));
+        });
+        setTimeout(() => reject(new Error('Extension timed out. Make sure you are logged into X.')), 45000);
+      } catch { reject(new Error('no_extension')); }
+    });
+  }
+
+  async function adminTryRailway(u) {
+    const url = `${RAILWAY_URL.replace(/\/$/, '')}/scrape?username=${encodeURIComponent(u)}`;
+    const resp = await fetch(url, { signal: AbortSignal.timeout(60000) });
+    if (!resp.ok) { const e = await resp.json().catch(() => ({})); throw new Error(e.error || 'Railway error'); }
+    const data = await resp.json();
+    if (!data.success) throw new Error(data.error || 'Scrape failed');
+    return new Set(data.ids || []);
+  }
+
+  const extAvail = window.chrome && chrome.runtime && EXTENSION_ID !== 'YOUR_EXTENSION_ID';
+  const railAvail = RAILWAY_URL && RAILWAY_URL !== 'YOUR_RAILWAY_URL';
+
+  try {
+    if (extAvail) {
+      try { repliedIds = await adminTryExtension(username); }
+      catch (e) {
+        if (e.message !== 'no_extension' && !railAvail) throw e;
+        if (!railAvail) throw new Error('no_extension');
+        repliedIds = await adminTryRailway(username);
+      }
+    } else if (railAvail) {
+      repliedIds = await adminTryRailway(username);
+    } else {
+      showMsg(errEl, 'error', 'No scraper configured. Set EXTENSION_ID or RAILWAY_URL in admin.html.');
+      btn.disabled = false; btn.innerHTML = 'CHECK';
+      return;
     }
-    // Fallback: x.com / twitter.com via proxy (usually returns JS shell, but worth trying)
-    if (!gotNitterData) {
-      const h1 = await adminFetchProxy(`https://x.com/${username}/with_replies`);
-      extractIds(h1).forEach(id => repliedIds.add(id));
-      const h2 = await adminFetchProxy(`https://twitter.com/${username}/with_replies`);
-      extractIds(h2).forEach(id => repliedIds.add(id));
-    }
-  } catch {}
+  } catch (e) {
+    showMsg(errEl, 'error', e.message === 'no_extension'
+      ? 'Extension not detected. Load it in chrome://extensions or set up Railway.'
+      : (e.message || 'Scan failed. Make sure you are logged into X.'));
+    btn.disabled = false; btn.innerHTML = 'CHECK';
+    return;
+  }
 
   const tweetResults = tweets.map(t => ({
     tweetId: t.tweet_id, tweetUrl: t.tweet_url, position: t.position,
