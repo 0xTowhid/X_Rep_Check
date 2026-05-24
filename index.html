@@ -247,6 +247,18 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:10px;col
         <a href="extension.zip" download class="btn btn-p btn-sm" style="text-decoration:none">⬇ Download Extension</a>
         <button class="btn btn-g btn-sm" onclick="checkExtension()">↺ Check Again</button>
       </div>
+      <!-- Manual ID entry for when auto-detect doesn't work -->
+      <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">
+        <div style="font-family:var(--mono);font-size:10px;color:var(--dim);margin-bottom:7px;letter-spacing:.08em">
+          ALREADY INSTALLED? PASTE YOUR EXTENSION ID BELOW
+          <span style="color:var(--muted)"> (chrome://extensions → copy ID under the extension name)</span>
+        </div>
+        <div style="display:flex;gap:8px">
+          <input type="text" id="manual-ext-id" class="nopfx" placeholder="e.g. abcdefghijklmnopabcdefghijklmnop" style="font-size:11px;padding:8px 10px;flex:1" autocomplete="off" spellcheck="false">
+          <button class="btn btn-g btn-sm" onclick="applyManualExtId()">Apply</button>
+        </div>
+        <div class="msg msg-e" id="manual-ext-err" style="margin-top:6px"></div>
+      </div>
     </div>
 
     <!-- Detected state -->
@@ -333,9 +345,16 @@ footer{text-align:center;padding:22px;font-family:var(--mono);font-size:10px;col
 const SUPA_URL = 'https://mcfmqlnraczhlduoxiek.supabase.co';
 const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1jZm1xbG5yYWN6aGxkdW94aWVrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk1MDg2OTEsImV4cCI6MjA5NTA4NDY5MX0.ixYx0k5eapbUYJxRhADgQV1mhcMS9Xuu7MmG9Syx3UU';
 
-// ★ PASTE YOUR EXTENSION ID HERE after loading it in Chrome
-// Find it at chrome://extensions under the extension name
-const EXT_ID = 'YOUR_EXTENSION_ID';
+// ★ Extension ID — auto-detected at runtime via PING probe.
+// You can still override manually: const EXT_ID = 'yourActualId';
+// To find your ID: chrome://extensions → enable Developer Mode → load unpacked → copy the ID shown.
+let EXT_ID = null;
+
+// List of IDs to probe (add your own after loading the unpacked extension)
+const EXT_ID_CANDIDATES = [
+  // Add your extension ID here after loading it, e.g.:
+  // 'abcdefghijklmnopabcdefghijklmnop',
+];
 
 const sb = supabase.createClient(SUPA_URL, SUPA_KEY);
 
@@ -367,25 +386,83 @@ document.addEventListener('DOMContentLoaded', () => {
 // EXTENSION DETECTION
 // ═══════════════════════════════════════════════
 function checkExtension() {
-  if (!window.chrome || !chrome.runtime || !EXT_ID || EXT_ID === 'YOUR_EXTENSION_ID') {
+  if (!window.chrome || !chrome.runtime) {
     showExtNotDetected();
     return;
   }
-  chrome.runtime.sendMessage(EXT_ID, { type: 'PING' }, resp => {
-    if (chrome.runtime.lastError || !resp) {
-      showExtNotDetected();
+
+  // If we already have a working EXT_ID, just ping it
+  if (EXT_ID) {
+    chrome.runtime.sendMessage(EXT_ID, { type: 'PING' }, resp => {
+      if (chrome.runtime.lastError || !resp || !resp.pong) {
+        EXT_ID = null; // reset and try candidates again
+        showExtNotDetected();
+      } else {
+        showExtDetected();
+      }
+    });
+    return;
+  }
+
+  // Try each candidate ID from the list
+  if (EXT_ID_CANDIDATES.length === 0) {
+    showExtNotDetected();
+    return;
+  }
+
+  let found = false;
+  let pending = EXT_ID_CANDIDATES.length;
+
+  for (const id of EXT_ID_CANDIDATES) {
+    chrome.runtime.sendMessage(id, { type: 'PING' }, resp => {
+      pending--;
+      if (!found && !chrome.runtime.lastError && resp && resp.pong) {
+        found = true;
+        EXT_ID = id;
+        showExtDetected();
+      } else if (!found && pending === 0) {
+        showExtNotDetected();
+      }
+    });
+  }
+}
+
+function applyManualExtId() {
+  const input = document.getElementById('manual-ext-id');
+  const errEl = document.getElementById('manual-ext-err');
+  const id = (input.value || '').trim();
+  errEl.className = 'msg';
+
+  if (!id || !/^[a-z]{32}$/.test(id)) {
+    errEl.textContent = 'Extension IDs are 32 lowercase letters. Check chrome://extensions.';
+    errEl.className = 'msg msg-e on';
+    return;
+  }
+
+  if (!window.chrome || !chrome.runtime) {
+    errEl.textContent = 'Chrome extension API not available. Use this page in Chrome.';
+    errEl.className = 'msg msg-e on';
+    return;
+  }
+
+  chrome.runtime.sendMessage(id, { type: 'PING' }, resp => {
+    if (chrome.runtime.lastError || !resp || !resp.pong) {
+      errEl.textContent = 'Could not reach extension with that ID. Make sure the extension is loaded and enabled in Chrome.';
+      errEl.className = 'msg msg-e on';
     } else {
+      EXT_ID = id;
+      errEl.className = 'msg';
       showExtDetected();
     }
   });
 }
 
-function showExtDetected() {
+
   extDetected = true;
   document.getElementById('ext-not-detected').style.display = 'none';
   document.getElementById('ext-detected').style.display = 'block';
   if (activeSession) document.getElementById('check-btn').disabled = false;
-}
+
 
 function showExtNotDetected() {
   extDetected = false;
