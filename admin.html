@@ -225,12 +225,9 @@ footer{text-align:center;padding:20px;font-family:var(--mono);font-size:10px;col
       <div><div class="sh-title">Check a User</div><div class="sh-sub">Verify any username against the active session using the extension</div></div>
     </div>
 
-    <!-- Extension status in admin -->
-    <div id="admin-ext-warn" class="msg msg-i on" style="margin-bottom:12px;display:none">
-      ⚡ Extension not detected. Load the extension in chrome://extensions and make sure you're logged into X, then come back.
-    </div>
-    <div id="admin-ext-ok" class="msg msg-s" style="margin-bottom:12px;display:none">
-      ✓ Extension detected — ready to check.
+    <!-- Server-side scraping: no extension needed for admin -->
+    <div class="msg msg-s on" style="margin-bottom:12px">
+      ✓ Admin check uses server-side scanning — no extension required. Just enter any username and click CHECK.
     </div>
 
     <div style="display:flex;gap:10px;margin-bottom:10px">
@@ -288,8 +285,9 @@ footer{text-align:center;padding:20px;font-family:var(--mono);font-size:10px;col
 const SUPA_URL = 'https://mcfmqlnraczhlduoxiek.supabase.co';
 const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1jZm1xbG5yYWN6aGxkdW94aWVrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk1MDg2OTEsImV4cCI6MjA5NTA4NDY5MX0.ixYx0k5eapbUYJxRhADgQV1mhcMS9Xuu7MmG9Syx3UU';
 
-// ★ Same Extension ID as index.html
-const EXT_ID = 'YOUR_EXTENSION_ID';
+// Extension ID — auto-detected via PING or entered manually
+let EXT_ID = null;
+const EXT_ID_CANDIDATES = [];
 
 const sb = supabase.createClient(SUPA_URL, SUPA_KEY);
 let currentUser = null;
@@ -343,25 +341,66 @@ function showAdmin() {
   document.getElementById('logout-btn').style.display = 'flex';
   document.getElementById('abadge').style.display = 'inline-flex';
   loadSessions();
-  checkAdminExtension();
 }
 
 // ═══════════════════════════════════════════════
 // EXTENSION CHECK (admin tab)
 // ═══════════════════════════════════════════════
 function checkAdminExtension() {
-  if (!window.chrome || !chrome.runtime || !EXT_ID || EXT_ID === 'YOUR_EXTENSION_ID') {
-    document.getElementById('admin-ext-warn').style.display = 'block';
-    document.getElementById('admin-ext-ok').style.display = 'none';
+  if (!window.chrome || !chrome.runtime) {
+    showAdminExtWarn(); return;
+  }
+  if (EXT_ID) {
+    chrome.runtime.sendMessage(EXT_ID, { type: 'PING' }, resp => {
+      if (chrome.runtime.lastError || !resp || !resp.pong) { EXT_ID = null; showAdminExtWarn(); }
+      else showAdminExtOk();
+    });
     return;
   }
-  chrome.runtime.sendMessage(EXT_ID, { type: 'PING' }, resp => {
-    if (chrome.runtime.lastError || !resp) {
-      document.getElementById('admin-ext-warn').style.display = 'block';
-      document.getElementById('admin-ext-ok').style.display = 'none';
+  if (!EXT_ID_CANDIDATES.length) { showAdminExtWarn(); return; }
+  let found = false, pending = EXT_ID_CANDIDATES.length;
+  for (const id of EXT_ID_CANDIDATES) {
+    chrome.runtime.sendMessage(id, { type: 'PING' }, resp => {
+      pending--;
+      if (!found && !chrome.runtime.lastError && resp && resp.pong) {
+        found = true; EXT_ID = id; showAdminExtOk();
+      } else if (!found && pending === 0) showAdminExtWarn();
+    });
+  }
+}
+
+function showAdminExtOk() {
+  document.getElementById('admin-ext-warn').style.display = 'none';
+  document.getElementById('admin-ext-ok').className = 'msg msg-s on';
+  document.getElementById('admin-ext-ok').style.display = 'block';
+  document.getElementById('admin-manual-wrap').style.display = 'none';
+}
+
+function showAdminExtWarn() {
+  document.getElementById('admin-ext-warn').style.display = 'block';
+  document.getElementById('admin-ext-ok').style.display = 'none';
+  document.getElementById('admin-manual-wrap').style.display = 'block';
+}
+
+function applyAdminExtId() {
+  const input = document.getElementById('admin-manual-ext-id');
+  const errEl = document.getElementById('admin-manual-ext-err');
+  const id = (input.value || '').trim();
+  errEl.className = 'msg';
+  if (!id || !/^[a-z]{32}$/.test(id)) {
+    errEl.textContent = 'Extension IDs are 32 lowercase letters. Check chrome://extensions.';
+    errEl.className = 'msg msg-e on'; return;
+  }
+  if (!window.chrome || !chrome.runtime) {
+    errEl.textContent = 'Chrome extension API not available.';
+    errEl.className = 'msg msg-e on'; return;
+  }
+  chrome.runtime.sendMessage(id, { type: 'PING' }, resp => {
+    if (chrome.runtime.lastError || !resp || !resp.pong) {
+      errEl.textContent = 'Could not reach extension. Make sure it is loaded and enabled in Chrome.';
+      errEl.className = 'msg msg-e on';
     } else {
-      document.getElementById('admin-ext-warn').style.display = 'none';
-      document.getElementById('admin-ext-ok').className = 'msg msg-s on';
+      EXT_ID = id; errEl.className = 'msg'; showAdminExtOk();
     }
   });
 }
@@ -374,7 +413,7 @@ function switchTab(name, el) {
   document.querySelectorAll('.tp').forEach(p => p.classList.remove('active'));
   el.classList.add('active');
   document.getElementById('tp-'+name).classList.add('active');
-  if (name === 'check') checkAdminExtension();
+  // server-side check needs no extension detection
 }
 
 // ═══════════════════════════════════════════════
@@ -530,28 +569,45 @@ async function adminCheck() {
   if (!tweets?.length) { showMsg(errEl,'e','Active session has no tweets.'); return; }
 
   const btn = document.getElementById('a-check-btn');
-  btn.disabled=true; btn.innerHTML='<div class="spin-inv"></div>';
+  btn.disabled=true; btn.innerHTML='<div class="spin-inv"></div> Scanning...';
   document.getElementById('a-result').style.display='none';
-
-  // Check extension available
-  if (!window.chrome || !chrome.runtime || !EXT_ID || EXT_ID==='YOUR_EXTENSION_ID') {
-    showMsg(errEl,'e','Extension ID not configured. Paste your Extension ID into admin.html.');
-    btn.disabled=false; btn.innerHTML='CHECK'; return;
-  }
+  errEl.className = 'msg';
 
   let repliedIds;
+
+  // Method 1: Server-side scrape via Vercel API (no extension needed)
   try {
-    repliedIds = await new Promise((res,rej) => {
-      chrome.runtime.sendMessage(EXT_ID,{type:'SCRAPE_REPLIES',username}, resp => {
-        if (chrome.runtime.lastError||!resp) return rej(new Error('Extension not responding. Make sure it is loaded and you are logged into X.'));
-        if (resp.error) return rej(new Error(resp.error));
-        res(new Set(resp.ids||[]));
-      });
-      setTimeout(()=>rej(new Error('Scan timed out. Make sure you are logged into x.com.')),60000);
-    });
-  } catch(e) {
-    showMsg(errEl,'e',e.message);
-    btn.disabled=false; btn.innerHTML='CHECK'; return;
+    showMsg(errEl,'i','⏳ Scanning via server...');
+    const apiUrl = `${window.location.origin}/api/scrape?username=${encodeURIComponent(username)}`;
+    const resp = await Promise.race([
+      fetch(apiUrl).then(r => r.json()),
+      new Promise((_,rej) => setTimeout(() => rej(new Error('Server timeout')), 25000))
+    ]);
+    if (resp.error) throw new Error(resp.error);
+    repliedIds = new Set(resp.ids || []);
+    errEl.className = 'msg'; // clear status
+  } catch (serverErr) {
+    // Method 2: Fallback to Chrome extension if available
+    if (window.chrome && chrome.runtime && EXT_ID) {
+      try {
+        showMsg(errEl,'i','⏳ Server unavailable — trying extension...');
+        repliedIds = await new Promise((res,rej) => {
+          chrome.runtime.sendMessage(EXT_ID,{type:'SCRAPE_REPLIES',username}, resp => {
+            if (chrome.runtime.lastError||!resp) return rej(new Error('Extension not responding.'));
+            if (resp.error) return rej(new Error(resp.error));
+            res(new Set(resp.ids||[]));
+          });
+          setTimeout(()=>rej(new Error('Extension timed out.')),60000);
+        });
+        errEl.className = 'msg';
+      } catch (extErr) {
+        showMsg(errEl,'e', `Server error: ${serverErr.message}. Extension error: ${extErr.message}`);
+        btn.disabled=false; btn.innerHTML='CHECK'; return;
+      }
+    } else {
+      showMsg(errEl,'e',`Server scrape failed: ${serverErr.message}. Deploy /api/scrape.js to Vercel or load the extension.`);
+      btn.disabled=false; btn.innerHTML='CHECK'; return;
+    }
   }
 
   const tweetResults = tweets.map(t=>({tweetId:t.tweet_id,tweetUrl:t.tweet_url,position:t.position,completed:repliedIds.has(t.tweet_id)}));
