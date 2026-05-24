@@ -227,7 +227,7 @@ footer{text-align:center;padding:20px;font-family:var(--mono);font-size:10px;col
 
     <!-- Server-side scraping: no extension needed for admin -->
     <div class="msg msg-s on" style="margin-bottom:12px">
-      ✓ Admin check uses server-side scanning — no extension required. Just enter any username and click CHECK.
+      ✓ Admin check reads user self-reported results (most accurate). If a user hasn't checked yet, a live server scan is attempted.
     </div>
 
     <div style="display:flex;gap:10px;margin-bottom:10px">
@@ -569,60 +569,86 @@ async function adminCheck() {
   if (!tweets?.length) { showMsg(errEl,'e','Active session has no tweets.'); return; }
 
   const btn = document.getElementById('a-check-btn');
-  btn.disabled=true; btn.innerHTML='<div class="spin-inv"></div> Scanning...';
+  btn.disabled=true; btn.innerHTML='<div class="spin-inv"></div> Looking up...';
   document.getElementById('a-result').style.display='none';
   errEl.className = 'msg';
 
-  let repliedIds;
+  // ── Priority 1: Read the result the user already submitted via their own extension
+  // This is the most accurate — it used their real logged-in X session
+  const {data:stored} = await sb.from('check_results')
+    .select('*')
+    .eq('session_id', session.id)
+    .eq('username', username)
+    .maybeSingle();
 
-  // Method 1: Server-side scrape via Vercel API (no extension needed)
-  try {
-    showMsg(errEl,'i','⏳ Scanning via server...');
-    const apiUrl = `${window.location.origin}/api/scrape?username=${encodeURIComponent(username)}`;
-    const resp = await Promise.race([
-      fetch(apiUrl).then(r => r.json()),
-      new Promise((_,rej) => setTimeout(() => rej(new Error('Server timeout')), 25000))
-    ]);
-    if (resp.error) throw new Error(resp.error);
-    repliedIds = new Set(resp.ids || []);
-    errEl.className = 'msg'; // clear status
-  } catch (serverErr) {
-    // Method 2: Fallback to Chrome extension if available
-    if (window.chrome && chrome.runtime && EXT_ID) {
+  let tweetResults, done, total, rate, status, source;
+
+  if (stored) {
+    // Use the stored result from when the user checked themselves
+    tweetResults = stored.tweet_results || tweets.map(t=>({
+      tweetId:t.tweet_id, tweetUrl:t.tweet_url, position:t.position, completed:false
+    }));
+    done  = stored.completed_count;
+    total = stored.total_count;
+    rate  = stored.completion_rate;
+    status = getStatus(rate);
+    source = `Last self-checked: ${new Date(stored.updated_at || stored.created_at || Date.now()).toUTCString()}`;
+    btn.disabled=false; btn.innerHTML='CHECK';
+
+  } else {
+    // ── Priority 2: User has never self-checked — try server-side scrape as best-effort
+    btn.innerHTML='<div class="spin-inv"></div> Scanning...';
+    showMsg(errEl,'i','⏳ No stored result — attempting live scan...');
+
+    let repliedIds = new Set();
+    let scanOk = false;
+
+    // Try Vercel API scraper
+    try {
+      const apiUrl = `${window.location.origin}/api/scrape?username=${encodeURIComponent(username)}`;
+      const resp = await Promise.race([
+        fetch(apiUrl).then(r => r.json()),
+        new Promise((_,rej) => setTimeout(() => rej(new Error('timeout')), 25000))
+      ]);
+      if (!resp.error) { repliedIds = new Set(resp.ids || []); scanOk = true; }
+    } catch (_) {}
+
+    // Fallback: extension if loaded
+    if (!scanOk && window.chrome && chrome.runtime && EXT_ID) {
       try {
-        showMsg(errEl,'i','⏳ Server unavailable — trying extension...');
         repliedIds = await new Promise((res,rej) => {
           chrome.runtime.sendMessage(EXT_ID,{type:'SCRAPE_REPLIES',username}, resp => {
-            if (chrome.runtime.lastError||!resp) return rej(new Error('Extension not responding.'));
+            if (chrome.runtime.lastError||!resp) return rej(new Error());
             if (resp.error) return rej(new Error(resp.error));
             res(new Set(resp.ids||[]));
           });
-          setTimeout(()=>rej(new Error('Extension timed out.')),60000);
+          setTimeout(()=>rej(new Error('timeout')),60000);
         });
-        errEl.className = 'msg';
-      } catch (extErr) {
-        showMsg(errEl,'e', `Server error: ${serverErr.message}. Extension error: ${extErr.message}`);
-        btn.disabled=false; btn.innerHTML='CHECK'; return;
-      }
-    } else {
-      showMsg(errEl,'e',`Server scrape failed: ${serverErr.message}. Deploy /api/scrape.js to Vercel or load the extension.`);
+        scanOk = true;
+      } catch (_) {}
+    }
+
+    if (!scanOk) {
+      showMsg(errEl,'e',`@${username} has never self-checked. Ask them to visit the user portal and run a check first — that gives the most accurate result.`);
       btn.disabled=false; btn.innerHTML='CHECK'; return;
     }
+
+    tweetResults = tweets.map(t=>({tweetId:t.tweet_id,tweetUrl:t.tweet_url,position:t.position,completed:repliedIds.has(t.tweet_id)}));
+    done   = tweetResults.filter(r=>r.completed).length;
+    total  = tweets.length;
+    rate   = total>0?Math.round((done/total)*1000)/10:0;
+    status = getStatus(rate);
+    source = '⚠ Live server scan (less accurate — user has not self-checked yet)';
+
+    await sb.from('check_results').upsert({
+      session_id:session.id, username,
+      completed_count:done, total_count:total,
+      completion_rate:rate, tweet_results:tweetResults
+    },{onConflict:'session_id,username'});
+
+    errEl.className = 'msg';
+    btn.disabled=false; btn.innerHTML='CHECK';
   }
-
-  const tweetResults = tweets.map(t=>({tweetId:t.tweet_id,tweetUrl:t.tweet_url,position:t.position,completed:repliedIds.has(t.tweet_id)}));
-  const done = tweetResults.filter(r=>r.completed).length;
-  const total = tweets.length;
-  const rate = total>0?Math.round((done/total)*1000)/10:0;
-  const status = getStatus(rate);
-
-  await sb.from('check_results').upsert({
-    session_id:session.id,username,
-    completed_count:done,total_count:total,
-    completion_rate:rate,tweet_results:tweetResults
-  },{onConflict:'session_id,username'});
-
-  btn.disabled=false; btn.innerHTML='CHECK';
 
   const sc = {
     TOP_PARTICIPANT:{lbl:'🏆 TOP PARTICIPANT',col:'var(--cyan)'},
@@ -662,6 +688,9 @@ async function adminCheck() {
             <a class="turl" href="${t.tweetUrl}" target="_blank" rel="noopener">${t.tweetUrl.replace('https://x.com/','').replace('https://twitter.com/','')}</a>
             <span class="ts2 ${t.completed?'y':'n'}">${t.completed?'✓ Done':'✗ Miss'}</span>
           </div>`).join('')}
+      </div>
+      <div style="font-family:var(--mono);font-size:10px;color:var(--dim);margin-top:10px;padding-top:8px;border-top:1px solid var(--border)">
+        📋 ${source}
       </div>
     </div>`;
   setTimeout(()=>{const b=document.getElementById('apb');if(b)b.style.width=rate+'%';},80);
